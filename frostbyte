@@ -989,6 +989,10 @@ def _monitor_tui(stdscr):
     C_LOGO1 = 17; C_LOGO2 = 18; C_LOGO3 = 19; C_LOGO4 = 20; C_LOGO5 = 21
     C_BTN = 22; C_BTN_SKIP = 23; C_HOVER = 24; C_BTN_HOV = 25
     C_ACCENT = 26; C_STAT_SEP = 27
+    # overlay pairs: bar colors on selection / hover backgrounds
+    C_BAR_FULL_S = 28; C_BAR_EMPTY_S = 29; C_BAR_HOT_S = 30; C_CAND_S = 31
+    C_BAR_FULL_H = 32; C_BAR_EMPTY_H = 33; C_BAR_HOT_H = 34; C_CAND_H = 35
+    C_STAT_LBL_S = 36; C_STAT_LBL_H = 37
 
     if use_256:
         curses.init_pair(C_LOGO, 81, -1)
@@ -1018,6 +1022,17 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_BTN_HOV, 16, 81)
         curses.init_pair(C_ACCENT, 99, -1)
         curses.init_pair(C_STAT_SEP, 240, -1)
+        # overlay pairs: bar fg on select bg (24) and hover bg (235)
+        curses.init_pair(C_BAR_FULL_S, 75, 24)
+        curses.init_pair(C_BAR_EMPTY_S, 238, 24)
+        curses.init_pair(C_BAR_HOT_S, 203, 24)
+        curses.init_pair(C_CAND_S, 222, 24)
+        curses.init_pair(C_STAT_LBL_S, 245, 24)
+        curses.init_pair(C_BAR_FULL_H, 75, 235)
+        curses.init_pair(C_BAR_EMPTY_H, 238, 235)
+        curses.init_pair(C_BAR_HOT_H, 203, 235)
+        curses.init_pair(C_CAND_H, 222, 235)
+        curses.init_pair(C_STAT_LBL_H, 245, 235)
     else:
         curses.init_pair(C_LOGO, curses.COLOR_CYAN, -1)
         curses.init_pair(C_BORDER, curses.COLOR_WHITE, -1)
@@ -1042,6 +1057,16 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_HOVER, curses.COLOR_WHITE, curses.COLOR_BLACK)
         curses.init_pair(C_ACCENT, curses.COLOR_MAGENTA, -1)
         curses.init_pair(C_STAT_SEP, curses.COLOR_WHITE, -1)
+        curses.init_pair(C_BAR_FULL_S, curses.COLOR_CYAN, curses.COLOR_BLUE)
+        curses.init_pair(C_BAR_EMPTY_S, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(C_BAR_HOT_S, curses.COLOR_RED, curses.COLOR_BLUE)
+        curses.init_pair(C_CAND_S, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+        curses.init_pair(C_STAT_LBL_S, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(C_BAR_FULL_H, curses.COLOR_CYAN, curses.COLOR_BLACK)
+        curses.init_pair(C_BAR_EMPTY_H, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        curses.init_pair(C_BAR_HOT_H, curses.COLOR_RED, curses.COLOR_BLACK)
+        curses.init_pair(C_CAND_H, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+        curses.init_pair(C_STAT_LBL_H, curses.COLOR_WHITE, curses.COLOR_BLACK)
         curses.init_pair(C_BTN_HOV, curses.COLOR_BLACK, curses.COLOR_CYAN)
 
     _logo_grad = [C_LOGO1, C_LOGO2, C_LOGO3, C_LOGO4, C_LOGO5]
@@ -1421,20 +1446,27 @@ def _monitor_tui(stdscr):
                     if is_sel:
                         _safe_addstr(stdscr, rr, 1, " " * inner,
                                      curses.color_pair(C_SELECT))
+                        _bf = C_BAR_FULL_S; _be = C_BAR_EMPTY_S
+                        _bh = C_BAR_HOT_S; _bc = C_CAND_S; _bl = C_STAT_LBL_S
                     elif is_hover:
                         _safe_addstr(stdscr, rr, 1, " " * inner,
                                      curses.color_pair(C_HOVER))
+                        _bf = C_BAR_FULL_H; _be = C_BAR_EMPTY_H
+                        _bh = C_BAR_HOT_H; _bc = C_CAND_H; _bl = C_STAT_LBL_H
+                    else:
+                        _bf = C_BAR_FULL; _be = C_BAR_EMPTY
+                        _bh = C_BAR_HOT; _bc = C_CAND; _bl = C_STAT_LBL
                     bx = 4
                     avail = min(bar_w, cols - bx - 14)
                     if tab == 0:
                         filled = int(group["total_rss"] / max_rss * avail) if max_rss > 0 else 0
                         filled = max(1, min(avail, filled))
                         _safe_addstr(stdscr, rr, bx, "█" * filled,
-                                     curses.color_pair(C_BAR_FULL))
+                                     curses.color_pair(_bf))
                         if filled < avail:
                             _safe_addstr(stdscr, rr, bx + filled,
                                          "░" * (avail - filled),
-                                         curses.color_pair(C_BAR_EMPTY))
+                                         curses.color_pair(_be))
                         bar_lbl = _fmt_mb(group["total_rss"])
                     else:
                         pct = group["max_idle"] / threshold if threshold > 0 else 0
@@ -1446,7 +1478,7 @@ def _monitor_tui(stdscr):
                                    min(filled, cut2),
                                    filled]
                         seg_start = [0, cut1, cut2]
-                        seg_color = [C_BAR_FULL, C_CAND, C_BAR_HOT]
+                        seg_color = [_bf, _bc, _bh]
                         for si in range(3):
                             s0 = max(0, seg_start[si])
                             s1 = min(avail, seg_end[si])
@@ -1457,13 +1489,13 @@ def _monitor_tui(stdscr):
                         if filled < avail:
                             _safe_addstr(stdscr, rr, bx + filled,
                                          "░" * (avail - filled),
-                                         curses.color_pair(C_BAR_EMPTY))
+                                         curses.color_pair(_be))
                         bar_lbl = f"{group['max_idle']:.1f}m"
                     # label after bar
                     lbl_x = bx + avail + 2
                     if lbl_x + len(bar_lbl) < cols - 1:
                         _safe_addstr(stdscr, rr, lbl_x, bar_lbl,
-                                     curses.color_pair(C_STAT_LBL))
+                                     curses.color_pair(_bl))
                     _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
                     rr += 1
 
