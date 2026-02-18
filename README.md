@@ -1,6 +1,6 @@
 <h1 align="center">
   <br>
-  <img src="assets/social-preview.png" alt="FrostByte" width="160">
+  <img src="assets/social-preview.png" alt="FrostByte" width="520">
   <br>
   FrostByte
   <br>
