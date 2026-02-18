@@ -18,19 +18,21 @@ import logging
 import argparse
 import curses
 import math
+import re
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
 
 _UID = os.getuid()
-FOCUS_FILE = Path(f"/tmp/frostbyte-focus-{_UID}")
-STATUS_FILE = Path(f"/tmp/frostbyte-status-{_UID}.json")
-THAW_FILE = Path(f"/tmp/frostbyte-thaw-{_UID}")
+_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{_UID}"))
+FOCUS_FILE = _RUNTIME_DIR / "frostbyte-focus"
+STATUS_FILE = _RUNTIME_DIR / "frostbyte-status.json"
+THAW_FILE = _RUNTIME_DIR / "frostbyte-thaw"
 CONFIG_DIR = Path.home() / ".config" / "frostbyte"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "frostbyte.log"
-PID_FILE = Path(f"/tmp/frostbyte-{_UID}.pid")
+PID_FILE = _RUNTIME_DIR / "frostbyte.pid"
 EXTENSION_UUID = "frostbyte@cryogen"
 EXTENSION_DIR = (
     Path.home() / ".local" / "share" / "gnome-shell" / "extensions" / EXTENSION_UUID
@@ -57,26 +59,17 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-function getUid() {
-    try {
-        const [ok, contents] = GLib.file_get_contents('/proc/self/status');
-        const m = new TextDecoder().decode(contents).match(/^Uid:\t(\d+)/m);
-        return m ? m[1] : '1000';
-    } catch (_) {
-        return '1000';
-    }
-}
-
-const UID = getUid();
-const FOCUS_FILE = `/tmp/frostbyte-focus-${UID}`;
-const STATUS_FILE = `/tmp/frostbyte-status-${UID}.json`;
-const THAW_FILE = `/tmp/frostbyte-thaw-${UID}`;
+const RUNTIME_DIR = GLib.get_user_runtime_dir();
+const FOCUS_FILE = `${RUNTIME_DIR}/frostbyte-focus`;
+const STATUS_FILE = `${RUNTIME_DIR}/frostbyte-status.json`;
+const THAW_FILE = `${RUNTIME_DIR}/frostbyte-thaw`;
+const PID_FILE = `${RUNTIME_DIR}/frostbyte.pid`;
 
 export default class FrostByteExtension extends Extension {
     enable() {
         // --- Ensure daemon is running ---
         try {
-            if (!GLib.file_test(`/tmp/frostbyte-${UID}.pid`, GLib.FileTest.EXISTS)) {
+            if (!GLib.file_test(PID_FILE, GLib.FileTest.EXISTS)) {
                 GLib.spawn_command_line_async(
                     'systemctl --user start frostbyte.service');
             }
@@ -301,6 +294,10 @@ DEFAULT_CONFIG = {
         "fish",
         # self
         "frostbyte",
+        # VPN (substring match — covers AmneziaVPN, OpenVPN, NordVPN, etc.)
+        "vpn",
+        "wireguard",
+        "wg-quick",
         # containers
         "docker",
         "containerd",
@@ -315,6 +312,8 @@ DEFAULT_CONFIG = {
         "gnome-keyring",
         "polkit",
     ],
+    "notifications": True,
+    "rules": [],
 }
 
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
@@ -355,6 +354,11 @@ class FrostByteDaemon:
         if config_overrides:
             self.config.update(config_overrides)
         self._tick = 0
+        self._should_exit = False
+        self._config_mtime = 0.0
+        self._audio_pids: Set[int] = set()
+        self._compiled_rules: List[dict] = []
+        self._compile_rules()
 
     # ── config ──────────────────────────────────────────────
 
@@ -402,6 +406,26 @@ class FrostByteDaemon:
         except ValueError:
             return False
 
+    # ── per-app rules ──────────────────────────────────────
+
+    def _compile_rules(self):
+        """Compile per-app rules from config into regex patterns."""
+        compiled = []
+        for rule in self.config.get("rules", []):
+            pattern = rule.get("pattern", "")
+            if not pattern:
+                continue
+            try:
+                compiled.append({
+                    "regex": re.compile(pattern, re.IGNORECASE),
+                    "freeze_after_minutes": rule.get("freeze_after_minutes",
+                                                      self.config["freeze_after_minutes"]),
+                    "min_rss_mb": rule.get("min_rss_mb", self.config["min_rss_mb"]),
+                })
+            except re.error as e:
+                logging.warning(f"Bad rule pattern {pattern!r}: {e}")
+        self._compiled_rules = compiled
+
     # ── logging ─────────────────────────────────────────────
 
     def _setup_logging(self):
@@ -431,6 +455,8 @@ class FrostByteDaemon:
         """Read /proc and update internal process table."""
         now = time.time()
         seen: Set[int] = set()
+        uid_prefix = f"Uid:\t{self.uid}\t"
+        ppid_map: Dict[int, List[int]] = {}
 
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
@@ -444,9 +470,10 @@ class FrostByteDaemon:
                 f = raw[rp + 2 :].split()
                 # f[0]=state f[1]=ppid f[2]=pgrp ... f[11]=utime f[12]=stime f[21]=rss
                 state = f[0]
+                ppid = int(f[1])
 
                 status = _read_file(f"/proc/{pid}/status")
-                if f"Uid:\t{self.uid}" not in status:
+                if uid_prefix not in status:
                     continue
 
                 cpu = int(f[11]) + int(f[12])
@@ -460,6 +487,7 @@ class FrostByteDaemon:
                     cmdline = comm
 
                 seen.add(pid)
+                ppid_map.setdefault(ppid, []).append(pid)
 
                 if pid in self.procs:
                     p = self.procs[pid]
@@ -484,15 +512,7 @@ class FrostByteDaemon:
                     IndexError, PermissionError):
                 continue
 
-        self._ppid_map = {}
-        for pid in seen:
-            try:
-                raw = _read_file(f"/proc/{pid}/stat")
-                rp = raw.rindex(")")
-                ppid = int(raw[rp + 2:].split()[1])
-                self._ppid_map.setdefault(ppid, []).append(pid)
-            except Exception:
-                continue
+        self._ppid_map = ppid_map
 
         # purge dead
         for pid in set(self.procs) - seen:
@@ -502,12 +522,17 @@ class FrostByteDaemon:
 
     # ── freeze / thaw ──────────────────────────────────────
 
-    def _children(self, pid: int) -> List[int]:
-        """Return list of all descendant PIDs."""
+    def _children(self, pid: int, _visited: Optional[Set[int]] = None) -> List[int]:
+        """Return list of all descendant PIDs (with cycle protection)."""
+        if _visited is None:
+            _visited = set()
         kids = []
         for child in self._ppid_map.get(pid, []):
+            if child in _visited:
+                continue
+            _visited.add(child)
             kids.append(child)
-            kids.extend(self._children(child))
+            kids.extend(self._children(child, _visited))
         return kids
 
     def freeze_pid(self, pid: int, reason: str = ""):
@@ -530,6 +555,14 @@ class FrostByteDaemon:
                 f"FROZE  {name} pid={pid} ({count} procs, {rss:.0f}MB)"
                 + (f" [{reason}]" if reason else "")
             )
+            self._notify("Frozen", f"{name} ({rss:.0f} MB)")
+
+    def _is_own_process(self, pid: int) -> bool:
+        """Check if a process belongs to the current user."""
+        try:
+            return os.stat(f"/proc/{pid}").st_uid == self.uid
+        except (FileNotFoundError, PermissionError):
+            return False
 
     def thaw_pid(self, pid: int):
         # find the highest stopped ancestor to thaw the entire cluster
@@ -537,6 +570,8 @@ class FrostByteDaemon:
         visited = set()
         current = pid
         while current > 1 and current not in visited:
+            if not self._is_own_process(current):
+                break
             if self._is_stopped(current):
                 root = current
             visited.add(current)
@@ -577,6 +612,7 @@ class FrostByteDaemon:
         if thawed:
             name = self.procs[root].name if root in self.procs else "?"
             logging.info(f"THAW   {name} pid={root} ({len(thawed)} procs)")
+            self._notify("Thawed", f"{name} ({len(thawed)} procs)")
 
     def thaw_all(self):
         self.scan()
@@ -657,14 +693,76 @@ class FrostByteDaemon:
                 continue
             if self._is_whitelisted(p.name, p.cmdline):
                 continue
-            if p.rss_mb < min_rss:
+            if pid in self._audio_pids:
+                continue
+            # per-app rules override global thresholds
+            rule_threshold = threshold
+            rule_min_rss = min_rss
+            for rule in self._compiled_rules:
+                if rule["regex"].search(p.name) or rule["regex"].search(p.cmdline):
+                    rule_threshold = rule.get("freeze_after_minutes", self.config["freeze_after_minutes"]) * 60
+                    rule_min_rss = rule.get("min_rss_mb", min_rss)
+                    break
+            if p.rss_mb < rule_min_rss:
                 continue
             idle = now - p.last_active
-            if idle >= threshold:
+            if idle >= rule_threshold:
                 self.freeze_pid(
                     pid,
                     reason=f"idle {idle / 60:.0f}min, {p.rss_mb:.0f}MB",
                 )
+
+    # ── audio detection ────────────────────────────────────
+
+    def _refresh_audio_pids(self):
+        """Get PIDs currently producing audio via pactl/pw-dump."""
+        pids = set()
+        try:
+            r = subprocess.run(
+                ["pactl", "list", "sink-inputs"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                for line in r.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("application.process.id"):
+                        val = line.split("=", 1)[-1].strip().strip('"')
+                        try:
+                            pids.add(int(val))
+                        except ValueError:
+                            pass
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        self._audio_pids = pids
+
+    # ── notifications ─────────────────────────────────────
+
+    def _notify(self, title: str, body: str):
+        """Send desktop notification via notify-send (fire and forget)."""
+        if not self.config.get("notifications", True):
+            return
+        try:
+            subprocess.Popen(
+                ["notify-send", "-a", "FrostByte", "-i", "dialog-information", title, body],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            pass
+
+    # ── config hot reload ─────────────────────────────────
+
+    def _reload_config_if_changed(self):
+        """Reload config if the file has been modified."""
+        try:
+            mt = CONFIG_FILE.stat().st_mtime
+            if mt != self._config_mtime:
+                self._config_mtime = mt
+                old_cfg = self.config
+                self.config = self._load_config()
+                self._compile_rules()
+                logging.info("Config reloaded")
+        except OSError:
+            pass
 
     # ── status + thaw-request ────────────────────────────────
 
@@ -696,10 +794,19 @@ class FrostByteDaemon:
     # ── shutdown ────────────────────────────────────────────
 
     def _shutdown(self, signum, frame):
+        self._should_exit = True
+
+    def _clean_exit(self):
+        """Graceful shutdown: thaw everything, clean up files."""
         logging.info("Shutting down — thawing all frozen processes")
         for pid in list(self.frozen):
             try:
                 os.kill(pid, signal.SIGCONT)
+                for child in self._children(pid):
+                    try:
+                        os.kill(child, signal.SIGCONT)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         try:
@@ -708,12 +815,18 @@ class FrostByteDaemon:
             pass
         THAW_FILE.unlink(missing_ok=True)
         PID_FILE.unlink(missing_ok=True)
-        sys.exit(0)
 
     def _check_already_running(self):
         if PID_FILE.exists():
             try:
                 old_pid = int(PID_FILE.read_text().strip())
+                # verify the PID is actually a frostbyte process (not reused)
+                try:
+                    cmdline = _read_file(f"/proc/{old_pid}/cmdline")
+                    if "frostbyte" not in cmdline:
+                        return  # stale PID file, different process now
+                except (FileNotFoundError, PermissionError):
+                    return  # process gone
                 os.kill(old_pid, 0)
                 print(f"FrostByte already running (PID {old_pid})", file=sys.stderr)
                 sys.exit(1)
@@ -774,19 +887,24 @@ class FrostByteDaemon:
 
         scans_per_tick = max(1, cfg["scan_interval"] // cfg["poll_interval"])
 
-        while True:
-            self._check_focus()
-            self._check_thaw()
+        try:
+            while not self._should_exit:
+                self._check_focus()
+                self._check_thaw()
 
-            self._tick += 1
-            if self._tick >= scans_per_tick:
-                self._tick = 0
-                self.scan()
-                self._check_freeze()
-                self._check_auto_thaw()
-                self._write_status()
+                self._tick += 1
+                if self._tick >= scans_per_tick:
+                    self._tick = 0
+                    self.scan()
+                    self._refresh_audio_pids()
+                    self._check_freeze()
+                    self._check_auto_thaw()
+                    self._write_status()
+                    self._reload_config_if_changed()
 
-            time.sleep(cfg["poll_interval"])
+                time.sleep(cfg["poll_interval"])
+        finally:
+            self._clean_exit()
 
     # ── CLI helpers ─────────────────────────────────────────
 
@@ -872,7 +990,7 @@ def cmd_thaw(args):
             except Exception:
                 continue
             if state == "T" and pattern in p.name.lower():
-                os.kill(pid, signal.SIGCONT)
+                d.thaw_pid(pid)
                 print(f"  Thawed {p.name} (PID {pid})")
                 found = True
         if not found:
@@ -880,18 +998,9 @@ def cmd_thaw(args):
     else:
         count = 0
         for pid, p in d.procs.items():
-            try:
-                raw = _read_file(f"/proc/{pid}/stat")
-                rp = raw.rindex(")")
-                state = raw[rp + 2 :].split()[0]
-            except Exception:
-                continue
-            if state == "T":
-                try:
-                    os.kill(pid, signal.SIGCONT)
-                    count += 1
-                except Exception:
-                    pass
+            if d._is_stopped(pid):
+                d.thaw_pid(pid)
+                count += 1
         print(f"  Thawed {count} processes")
 
 
