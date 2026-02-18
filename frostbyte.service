@@ -1,10 +1,10 @@
 [Unit]
-Description=Freezer — auto-suspend inactive apps
+Description=FrostByte — auto-suspend inactive apps
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/freezer run
+ExecStart=%h/.local/bin/frostbyte run
 Restart=on-failure
 RestartSec=5
 

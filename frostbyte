@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Freezer — auto-suspend inactive GUI apps to save RAM.
+FrostByte — auto-suspend inactive GUI apps to save RAM.
 For GNOME on Wayland (Pop!_OS, Ubuntu, Fedora).
 
 Monitors process CPU activity via /proc. After N minutes of inactivity,
@@ -21,13 +21,13 @@ from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
 
 _UID = os.getuid()
-FOCUS_FILE = Path(f"/tmp/freezer-focus-{_UID}")
-STATUS_FILE = Path(f"/tmp/freezer-status-{_UID}.json")
-THAW_FILE = Path(f"/tmp/freezer-thaw-{_UID}")
-CONFIG_DIR = Path.home() / ".config" / "freezer"
+FOCUS_FILE = Path(f"/tmp/frostbyte-focus-{_UID}")
+STATUS_FILE = Path(f"/tmp/frostbyte-status-{_UID}.json")
+THAW_FILE = Path(f"/tmp/frostbyte-thaw-{_UID}")
+CONFIG_DIR = Path.home() / ".config" / "frostbyte"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-LOG_FILE = CONFIG_DIR / "freezer.log"
-PID_FILE = Path(f"/tmp/freezer-{_UID}.pid")
+LOG_FILE = CONFIG_DIR / "frostbyte.log"
+PID_FILE = Path(f"/tmp/frostbyte-{_UID}.pid")
 
 DEFAULT_CONFIG = {
     "freeze_after_minutes": 30,
@@ -52,7 +52,7 @@ DEFAULT_CONFIG = {
         "bash",
         "zsh",
         "fish",
-        "freezer",
+        "frostbyte",
         "docker",
         "containerd",
         "systemd",
@@ -84,7 +84,7 @@ class Proc:
     frozen: bool = False
 
 
-class FreezerDaemon:
+class FrostByteDaemon:
     def __init__(self, config_overrides: Optional[dict] = None):
         self.uid = os.getuid()
         self.procs: Dict[int, Proc] = {}
@@ -391,12 +391,12 @@ class FreezerDaemon:
             try:
                 old_pid = int(PID_FILE.read_text().strip())
                 os.kill(old_pid, 0)
-                print(f"Freezer already running (PID {old_pid})", file=sys.stderr)
+                print(f"FrostByte already running (PID {old_pid})", file=sys.stderr)
                 sys.exit(1)
             except (ProcessLookupError, ValueError):
                 pass
             except PermissionError:
-                print(f"Freezer already running (PID {old_pid})", file=sys.stderr)
+                print(f"FrostByte already running (PID {old_pid})", file=sys.stderr)
                 sys.exit(1)
 
     # ── main loop ───────────────────────────────────────────
@@ -412,7 +412,7 @@ class FreezerDaemon:
 
         cfg = self.config
         logging.info(
-            f"Freezer started — freeze after {cfg['freeze_after_minutes']}min, "
+            f"FrostByte started — freeze after {cfg['freeze_after_minutes']}min, "
             f"min RSS {cfg['min_rss_mb']}MB, "
             f"poll {cfg['poll_interval']}s, scan {cfg['scan_interval']}s"
         )
@@ -493,16 +493,16 @@ def cmd_run(args):
         overrides["freeze_after_minutes"] = args.freeze_after
     if args.min_rss is not None:
         overrides["min_rss_mb"] = args.min_rss
-    daemon = FreezerDaemon(overrides)
+    daemon = FrostByteDaemon(overrides)
     daemon.run()
 
 
 def cmd_status(args):
-    FreezerDaemon().print_status()
+    FrostByteDaemon().print_status()
 
 
 def cmd_thaw(args):
-    d = FreezerDaemon()
+    d = FrostByteDaemon()
     d.scan()
 
     if args.name:
@@ -540,7 +540,7 @@ def cmd_thaw(args):
 
 
 def cmd_freeze(args):
-    d = FreezerDaemon()
+    d = FrostByteDaemon()
     d.scan()
     pattern = args.name.lower()
     found = False
@@ -556,7 +556,7 @@ def cmd_freeze(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="freezer",
+        prog="frostbyte",
         description="Auto-suspend inactive apps to save RAM",
     )
     sub = parser.add_subparsers(dest="cmd")

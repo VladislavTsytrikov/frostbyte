@@ -7,16 +7,16 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-echo "=== Installing Freezer ==="
+echo "=== Installing FrostByte ==="
 
 # daemon
-echo "  Copying daemon to ~/.local/bin/freezer"
+echo "  Copying daemon to ~/.local/bin/frostbyte"
 mkdir -p ~/.local/bin
-cp "$DIR/freezer" ~/.local/bin/freezer
-chmod +x ~/.local/bin/freezer
+cp "$DIR/frostbyte" ~/.local/bin/frostbyte
+chmod +x ~/.local/bin/frostbyte
 
 # gnome extension
-EXT=~/.local/share/gnome-shell/extensions/freezer@cryogen
+EXT=~/.local/share/gnome-shell/extensions/frostbyte@cryogen
 echo "  Installing GNOME extension to $EXT"
 mkdir -p "$EXT"
 cp "$DIR/extension/metadata.json" "$EXT/"
@@ -25,31 +25,31 @@ cp "$DIR/extension/extension.js" "$EXT/"
 # systemd
 echo "  Installing systemd user service"
 mkdir -p ~/.config/systemd/user
-cp "$DIR/freezer.service" ~/.config/systemd/user/
+cp "$DIR/frostbyte.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 
 # config
-mkdir -p ~/.config/freezer
+mkdir -p ~/.config/frostbyte
 
 echo ""
 echo "=== Done ==="
 echo ""
 echo "Step 1 — Enable GNOME extension (requires logout/login):"
-echo "  gnome-extensions enable freezer@cryogen"
+echo "  gnome-extensions enable frostbyte@cryogen"
 echo ""
 echo "Step 2 — Start the daemon:"
-echo "  systemctl --user enable --now freezer.service"
+echo "  systemctl --user enable --now frostbyte.service"
 echo ""
 echo "Commands:"
-echo "  freezer status           — show frozen & candidate processes"
-echo "  freezer thaw [name]      — thaw processes"
-echo "  freezer freeze <name>    — manually freeze a process"
+echo "  frostbyte status           — show frozen & candidate processes"
+echo "  frostbyte thaw [name]      — thaw processes"
+echo "  frostbyte freeze <name>    — manually freeze a process"
 echo ""
-echo "Config: ~/.config/freezer/config.json"
-echo "Logs:   ~/.config/freezer/freezer.log"
+echo "Config: ~/.config/frostbyte/config.json"
+echo "Logs:   ~/.config/frostbyte/frostbyte.log"
 echo ""
 echo "To uninstall:"
-echo "  systemctl --user disable --now freezer.service"
-echo "  rm ~/.local/bin/freezer"
-echo "  rm -rf ~/.local/share/gnome-shell/extensions/freezer@cryogen"
-echo "  rm ~/.config/systemd/user/freezer.service"
+echo "  systemctl --user disable --now frostbyte.service"
+echo "  rm ~/.local/bin/frostbyte"
+echo "  rm -rf ~/.local/share/gnome-shell/extensions/frostbyte@cryogen"
+echo "  rm ~/.config/systemd/user/frostbyte.service"

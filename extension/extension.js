@@ -18,11 +18,11 @@ function getUid() {
 }
 
 const UID = getUid();
-const FOCUS_FILE = `/tmp/freezer-focus-${UID}`;
-const STATUS_FILE = `/tmp/freezer-status-${UID}.json`;
-const THAW_FILE = `/tmp/freezer-thaw-${UID}`;
+const FOCUS_FILE = `/tmp/frostbyte-focus-${UID}`;
+const STATUS_FILE = `/tmp/frostbyte-status-${UID}.json`;
+const THAW_FILE = `/tmp/frostbyte-thaw-${UID}`;
 
-export default class FreezerExtension extends Extension {
+export default class FrostByteExtension extends Extension {
     enable() {
         // --- Focus tracking (existing logic) ---
         this._focusId = global.display.connect('notify::focus-window', () => {
@@ -40,7 +40,7 @@ export default class FreezerExtension extends Extension {
         });
 
         // --- Panel indicator ---
-        this._indicator = new PanelMenu.Button(0.0, 'Freezer', false);
+        this._indicator = new PanelMenu.Button(0.0, 'FrostByte', false);
 
         this._icon = new St.Label({
             text: '\u2744',
@@ -69,7 +69,7 @@ export default class FreezerExtension extends Extension {
             }
         });
 
-        Main.panel.addToStatusArea('freezer', this._indicator);
+        Main.panel.addToStatusArea('frostbyte', this._indicator);
     }
 
     _buildMenu() {
@@ -77,12 +77,12 @@ export default class FreezerExtension extends Extension {
         menu.removeAll();
 
         // Toggle
-        this._toggleItem = new PopupMenu.PopupSwitchMenuItem('Freezer', true);
+        this._toggleItem = new PopupMenu.PopupSwitchMenuItem('FrostByte', true);
         this._toggleItem.connect('toggled', (_item, state) => {
             const cmd = state ? 'start' : 'stop';
             try {
                 GLib.spawn_command_line_async(
-                    `systemctl --user ${cmd} freezer.service`);
+                    `systemctl --user ${cmd} frostbyte.service`);
             } catch (_) {}
         });
         menu.addMenuItem(this._toggleItem);
