@@ -475,6 +475,9 @@ class FrostByteDaemon:
                 status = _read_file(f"/proc/{pid}/status")
                 if uid_prefix not in status:
                     continue
+                # skip threads — only track thread group leaders (processes)
+                if f"Tgid:\t{pid}\n" not in status:
+                    continue
 
                 cpu = int(f[11]) + int(f[12])
                 rss = int(f[21]) * PAGE_SIZE / 1048576
