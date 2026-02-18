@@ -56,23 +56,13 @@ Launch the dashboard with `frostbyte monitor`. It's not just a status tool; it's
 
 ---
 
-## 🛠️ Installation
+## Install
 
-### One-liner (Fastest)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main/install.sh | bash
 ```
 
-### From Source
-```bash
-git clone https://github.com/VladislavTsytrikov/frostbyte.git
-cd frostbyte
-./install.sh
-```
-
-### Post-Install
-1. **Enable the extension**: `gnome-extensions enable frostbyte@cryogen` (you might need to log out/in or restart GNOME Shell).
-2. **Start the daemon**: `systemctl --user enable --now frostbyte.service`
+One command. Installs the daemon, GNOME extension, and systemd service. Starts everything automatically.
 
 ---
 

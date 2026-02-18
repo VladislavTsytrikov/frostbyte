@@ -1,75 +1,66 @@
 #!/bin/bash
 set -e
 
+G='\033[0;32m' D='\033[0;90m' B='\033[1m' N='\033[0m'
+
+echo -e "\n${B}❄ FrostByte${N} installer\n"
+
+# ── checks ──
 if ! command -v python3 &>/dev/null; then
-    echo "Error: python3 is required" >&2
-    exit 1
+    echo "Error: python3 is required" >&2; exit 1
 fi
 
-# Detect if running via curl|bash (no local script file)
+# ── source ──
 if ! [ -f "$0" ]; then
-    if ! command -v curl &>/dev/null; then
-        echo "Error: curl is required for remote install" >&2
-        exit 1
-    fi
-    FB_TMP="$(mktemp -d)"
-    trap 'rm -rf "$FB_TMP"' EXIT
-    RAWBASE="https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main"
-    echo "  Downloading FrostByte files..."
-    curl -fsSL "$RAWBASE/frostbyte"                -o "$FB_TMP/frostbyte"
-    curl -fsSL "$RAWBASE/frostbyte.service"        -o "$FB_TMP/frostbyte.service"
+    command -v curl &>/dev/null || { echo "Error: curl required" >&2; exit 1; }
+    FB_TMP="$(mktemp -d)"; trap 'rm -rf "$FB_TMP"' EXIT
+    RAW="https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main"
+    echo -e "  ${D}downloading...${N}"
+    curl -fsSL "$RAW/frostbyte"                -o "$FB_TMP/frostbyte"
+    curl -fsSL "$RAW/frostbyte.service"        -o "$FB_TMP/frostbyte.service"
     mkdir -p "$FB_TMP/extension"
-    curl -fsSL "$RAWBASE/extension/metadata.json"  -o "$FB_TMP/extension/metadata.json"
-    curl -fsSL "$RAWBASE/extension/extension.js"   -o "$FB_TMP/extension/extension.js"
+    curl -fsSL "$RAW/extension/metadata.json"  -o "$FB_TMP/extension/metadata.json"
+    curl -fsSL "$RAW/extension/extension.js"   -o "$FB_TMP/extension/extension.js"
     DIR="$FB_TMP"
 else
     DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
 
-echo "=== Installing FrostByte ==="
-
-# daemon
-echo "  Copying daemon to ~/.local/bin/frostbyte"
+# ── install ──
 mkdir -p ~/.local/bin
 cp "$DIR/frostbyte" ~/.local/bin/frostbyte
 chmod +x ~/.local/bin/frostbyte
+echo -e "  ${G}✓${N} daemon    → ~/.local/bin/frostbyte"
 
-# gnome extension
 EXT=~/.local/share/gnome-shell/extensions/frostbyte@cryogen
-echo "  Installing GNOME extension to $EXT"
 mkdir -p "$EXT"
 cp "$DIR/extension/metadata.json" "$EXT/"
-cp "$DIR/extension/extension.js" "$EXT/"
+cp "$DIR/extension/extension.js"  "$EXT/"
+echo -e "  ${G}✓${N} extension → frostbyte@cryogen"
 
-# systemd
-echo "  Installing systemd user service"
 mkdir -p ~/.config/systemd/user
 cp "$DIR/frostbyte.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
+echo -e "  ${G}✓${N} service   → frostbyte.service"
 
-# config
 mkdir -p ~/.config/frostbyte
 
-echo ""
-echo "=== Done ==="
-echo ""
-echo "Step 1 — Enable GNOME extension (requires logout/login):"
-echo "  gnome-extensions enable frostbyte@cryogen"
-echo ""
-echo "Step 2 — Start the daemon:"
-echo "  systemctl --user enable --now frostbyte.service"
-echo ""
-echo "Commands:"
-echo "  frostbyte status           — show frozen & candidate processes"
-echo "  frostbyte monitor          — live TUI dashboard"
-echo "  frostbyte thaw [name]      — thaw processes"
-echo "  frostbyte freeze <name>    — manually freeze a process"
-echo ""
-echo "Config: ~/.config/frostbyte/config.json"
-echo "Logs:   ~/.config/frostbyte/frostbyte.log"
-echo ""
-echo "To uninstall:"
-echo "  systemctl --user disable --now frostbyte.service"
-echo "  rm ~/.local/bin/frostbyte"
-echo "  rm -rf ~/.local/share/gnome-shell/extensions/frostbyte@cryogen"
-echo "  rm ~/.config/systemd/user/frostbyte.service"
+# ── activate ──
+if command -v gnome-extensions &>/dev/null; then
+    gnome-extensions enable frostbyte@cryogen 2>/dev/null \
+        && echo -e "  ${G}✓${N} extension enabled" \
+        || echo -e "  ${D}! extension installed — log out/in to activate${N}"
+fi
+
+systemctl --user enable --now frostbyte.service 2>/dev/null \
+    && echo -e "  ${G}✓${N} daemon started" \
+    || echo -e "  ${D}! run: systemctl --user enable --now frostbyte.service${N}"
+
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    echo -e "  ${D}! add to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"${N}"
+fi
+
+echo -e "\n${G}${B}Done!${N} FrostByte is running. ❄"
+echo -e "${D}  config → ~/.config/frostbyte/config.json"
+echo -e "  logs   → ~/.config/frostbyte/frostbyte.log"
+echo -e "  tui    → frostbyte monitor${N}\n"
