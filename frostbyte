@@ -17,6 +17,7 @@ import json
 import logging
 import argparse
 import curses
+import random
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
@@ -599,7 +600,7 @@ def _monitor_tui(stdscr):
     """Live curses dashboard — modern TUI with visual blocks."""
     curses.use_default_colors()
     curses.curs_set(0)
-    stdscr.timeout(2000)
+    stdscr.timeout(100)
     _MOUSE_MOVE = getattr(curses, 'REPORT_MOUSE_POSITION', 0)
     curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
@@ -611,7 +612,7 @@ def _monitor_tui(stdscr):
     C_FOOTER = 9; C_FOOTER_KEY = 10; C_MSG = 11; C_SELECT = 12
     C_PROMPT = 13; C_HEAD = 14; C_DIM = 15; C_BAR_HOT = 16
     C_LOGO1 = 17; C_LOGO2 = 18; C_LOGO3 = 19; C_LOGO4 = 20; C_LOGO5 = 21
-    C_BTN = 22; C_BTN_SKIP = 23
+    C_BTN = 22; C_BTN_SKIP = 23; C_HOVER = 24
 
     if use_256:
         curses.init_pair(C_LOGO, 81, -1)
@@ -637,6 +638,7 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_LOGO5, 75, -1)
         curses.init_pair(C_BTN, 81, 237)
         curses.init_pair(C_BTN_SKIP, 222, 237)
+        curses.init_pair(C_HOVER, 252, 235)
     else:
         curses.init_pair(C_LOGO, curses.COLOR_CYAN, -1)
         curses.init_pair(C_BORDER, curses.COLOR_WHITE, -1)
@@ -658,6 +660,7 @@ def _monitor_tui(stdscr):
             curses.init_pair(cp, curses.COLOR_CYAN, -1)
         curses.init_pair(C_BTN, curses.COLOR_CYAN, curses.COLOR_BLACK)
         curses.init_pair(C_BTN_SKIP, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+        curses.init_pair(C_HOVER, curses.COLOR_WHITE, curses.COLOR_BLACK)
 
     _logo_grad = [C_LOGO1, C_LOGO2, C_LOGO3, C_LOGO4, C_LOGO5]
 
@@ -676,6 +679,10 @@ def _monitor_tui(stdscr):
     _block_y = []  # (y_start, y_end, index) for mouse click targets
     _btn_act = None   # (y, x_start, x_end) for action button
     _btn_skip = None  # (y, x_start, x_end) for skip button
+    hover = -1        # block under mouse (visual only, separate from sel)
+    _frame = 0
+    _snow = []        # [(x, y_float, char, speed), ...]
+    _snow_chars = "·✧✦❄❆"
 
     def _framed(row, content="", attr=0):
         w = cols - 2
@@ -699,6 +706,7 @@ def _monitor_tui(stdscr):
         stdscr.erase()
         _btn_act = None
         _btn_skip = None
+        _frame += 1
 
         if rows < 14 or cols < 60:
             _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 10),
@@ -773,10 +781,11 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, r, cols - 1, "│", bdr)
             r += 1
 
+        _logo_shift = (_frame // 12) % 5
         for i, line in enumerate(logo):
             _safe_addstr(stdscr, r + i, 0, "│", bdr)
             if use_big:
-                lc = _logo_grad[i] if i < len(_logo_grad) else C_LOGO
+                lc = _logo_grad[(i + _logo_shift) % 5]
             else:
                 lc = C_LOGO
             _safe_addstr(stdscr, r + i, lx, line,
@@ -888,6 +897,7 @@ def _monitor_tui(stdscr):
                 idx = scroll + vi
                 _blk_y0 = rr
                 is_sel = (idx == sel)
+                is_hover = (idx == hover and not is_sel)
                 name = group["name"]
                 rss_str = _fmt_mb(group["total_rss"])
 
@@ -898,7 +908,7 @@ def _monitor_tui(stdscr):
                     idle = group["max_idle"]
                     right = f"{rss_str}   idle {idle:.1f}m"
 
-                left = f" ▸ {name}" if is_sel else f"   {name}"
+                left = f" ▸ {name}" if is_sel else (f" › {name}" if is_hover else f"   {name}")
                 gap = inner - len(left) - len(right) - 1
                 if gap < 1:
                     gap = 1
@@ -925,6 +935,15 @@ def _monitor_tui(stdscr):
                                  curses.color_pair(C_BTN_SKIP) | curses.A_BOLD)
                     _btn_act = (rr, act_x, act_x + len(btn_lbl))
                     _btn_skip = (rr, skip_x, skip_x + len(skip_lbl))
+                elif is_hover:
+                    _safe_addstr(stdscr, rr, 1, " " * inner,
+                                 curses.color_pair(C_HOVER))
+                    _safe_addstr(stdscr, rr, 1, left[:inner],
+                                 curses.color_pair(C_HOVER))
+                    rx = 1 + len(left) + gap
+                    if rx + len(right) < cols - 1:
+                        _safe_addstr(stdscr, rr, rx, right,
+                                     curses.color_pair(C_HOVER))
                 else:
                     rc = C_FROZEN if tab == 0 else C_CAND
                     _safe_addstr(stdscr, rr, 1, left[:inner],
@@ -939,14 +958,22 @@ def _monitor_tui(stdscr):
                 # ── bar line (full-width) ──
                 if rr < content_bot:
                     _safe_addstr(stdscr, rr, 0, "│", bdr)
+                    if is_sel:
+                        _safe_addstr(stdscr, rr, 1, " " * inner,
+                                     curses.color_pair(C_SELECT))
+                    elif is_hover:
+                        _safe_addstr(stdscr, rr, 1, " " * inner,
+                                     curses.color_pair(C_HOVER))
                     bx = 4
+                    spark = (_frame // 3 + vi * 7) % (bar_w + 12)
                     if tab == 0:
                         filled = int(group["total_rss"] / max_rss * bar_w) if max_rss > 0 else 0
                         filled = max(1, min(bar_w, filled))
                         for j in range(min(bar_w, cols - bx - 1)):
                             if j < filled:
+                                shimmer = curses.A_BOLD if spark - 1 <= j <= spark + 1 else 0
                                 _safe_addstr(stdscr, rr, bx + j, "█",
-                                             curses.color_pair(C_BAR_FULL))
+                                             curses.color_pair(C_BAR_FULL) | shimmer)
                             else:
                                 _safe_addstr(stdscr, rr, bx + j, "░",
                                              curses.color_pair(C_BAR_EMPTY))
@@ -962,8 +989,9 @@ def _monitor_tui(stdscr):
                                     c = C_CAND
                                 else:
                                     c = C_BAR_FULL
+                                shimmer = curses.A_BOLD if spark - 1 <= j <= spark + 1 else 0
                                 _safe_addstr(stdscr, rr, bx + j, "█",
-                                             curses.color_pair(c))
+                                             curses.color_pair(c) | shimmer)
                             else:
                                 _safe_addstr(stdscr, rr, bx + j, "░",
                                              curses.color_pair(C_BAR_EMPTY))
@@ -1015,6 +1043,28 @@ def _monitor_tui(stdscr):
                          curses.color_pair(C_FOOTER))
             fx += len(d) + 2
 
+        # ── snowflake animation ──
+        for i in range(len(_snow)):
+            sx, sy, sc, ss = _snow[i]
+            _snow[i] = (sx + random.uniform(-0.15, 0.15), sy + ss, sc, ss)
+        _snow = [(sx, sy, sc, ss) for sx, sy, sc, ss in _snow
+                 if content_top <= int(sy) < content_bot]
+        if len(_snow) < 20 and random.random() < 0.2:
+            sx = random.randint(3, max(4, cols - 3))
+            sc = random.choice(_snow_chars)
+            ss = random.uniform(0.04, 0.12)
+            _snow.append((float(sx), float(content_top), sc, ss))
+        for sx, sy, sc, ss in _snow:
+            iy, ix = int(sy), int(sx)
+            if 1 < ix < cols - 1:
+                try:
+                    ch = stdscr.inch(iy, ix) & 0xFF
+                    if ch == ord(' '):
+                        _safe_addstr(stdscr, iy, ix, sc,
+                                     curses.color_pair(C_DIM))
+                except curses.error:
+                    pass
+
         stdscr.refresh()
 
         # ── input ──
@@ -1032,6 +1082,7 @@ def _monitor_tui(stdscr):
             tab = 1 - tab
             sel = 0
             scroll = 0
+            hover = -1
         elif key == curses.KEY_UP:
             sel = max(0, sel - 1)
         elif key == curses.KEY_DOWN:
@@ -1080,10 +1131,11 @@ def _monitor_tui(stdscr):
                                     sel = bi
                                 break
                 else:
-                    # hover — select block under cursor
+                    # hover — highlight block under cursor
+                    hover = -1
                     for y0, y1, bi in _block_y:
                         if y0 <= my < y1:
-                            sel = bi
+                            hover = bi
                             break
             except curses.error:
                 pass
