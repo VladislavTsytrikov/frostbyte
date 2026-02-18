@@ -32,7 +32,7 @@ LOG_FILE = CONFIG_DIR / "frostbyte.log"
 PID_FILE = Path(f"/tmp/frostbyte-{_UID}.pid")
 
 DEFAULT_CONFIG = {
-    "freeze_after_minutes": 30,
+    "freeze_after_minutes": 10,
     "min_rss_mb": 100,
     "poll_interval": 1,
     "scan_interval": 30,
