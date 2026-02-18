@@ -20,11 +20,14 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
 
-FOCUS_FILE = Path("/tmp/freezer-focus")
+_UID = os.getuid()
+FOCUS_FILE = Path(f"/tmp/freezer-focus-{_UID}")
+STATUS_FILE = Path(f"/tmp/freezer-status-{_UID}.json")
+THAW_FILE = Path(f"/tmp/freezer-thaw-{_UID}")
 CONFIG_DIR = Path.home() / ".config" / "freezer"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "freezer.log"
-PID_FILE = Path("/tmp/freezer.pid")
+PID_FILE = Path(f"/tmp/freezer-{_UID}.pid")
 
 DEFAULT_CONFIG = {
     "freeze_after_minutes": 30,
@@ -99,8 +102,8 @@ class FreezerDaemon:
         if CONFIG_FILE.exists():
             try:
                 cfg.update(json.loads(CONFIG_FILE.read_text()))
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"Bad config {CONFIG_FILE}: {e} — using defaults")
         return cfg
 
     def _save_default_config(self):
