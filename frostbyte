@@ -570,14 +570,13 @@ _LOGO = [
 
 
 def _monitor_tui(stdscr):
-    """Live curses dashboard — modern TUI."""
+    """Live curses dashboard — modern TUI with visual blocks."""
     curses.use_default_colors()
     curses.curs_set(0)
     stdscr.timeout(2000)
 
     use_256 = curses.COLORS >= 256
 
-    # color pairs
     C_LOGO = 1; C_BORDER = 2; C_FROZEN = 3; C_CAND = 4
     C_STAT_VAL = 5; C_STAT_LBL = 6; C_BAR_FULL = 7; C_BAR_EMPTY = 8
     C_FOOTER = 9; C_FOOTER_KEY = 10; C_MSG = 11; C_SELECT = 12
@@ -621,22 +620,23 @@ def _monitor_tui(stdscr):
     bdr = curses.color_pair(C_BORDER)
     daemon = FrostByteDaemon()
     message = ""
-    msg_time = 0
-    selected = 0
+    msg_time = 0.0
+    tab = 0        # 0=frozen, 1=candidates
+    sel = 0        # selected index in active tab
+    scroll = 0     # scroll offset
 
-    # inner width = cols - 2 (left/right │ borders)
-    def _framed(row, content, attr=0):
-        """Draw a content line with │ borders on left and right."""
-        inner = cols - 2
+    def _framed(row, content="", attr=0):
+        w = cols - 2
         _safe_addstr(stdscr, row, 0, "│", bdr)
-        text = content[:inner].ljust(inner)
-        _safe_addstr(stdscr, row, 1, text, attr)
+        _safe_addstr(stdscr, row, 1, content[:w].ljust(w), attr)
         _safe_addstr(stdscr, row, cols - 1, "│", bdr)
 
     def _hline(row, left, right):
-        """Draw a horizontal rule with box-drawing corners/tees."""
         line = left + "─" * max(0, cols - 2) + right
         _safe_addstr(stdscr, row, 0, line[:cols], bdr)
+
+    def _fmt_mb(mb):
+        return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
 
     while True:
         daemon.scan()
@@ -644,13 +644,11 @@ def _monitor_tui(stdscr):
         stdscr.erase()
 
         if rows < 14 or cols < 60:
-            _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 12),
+            _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 10),
                          "Terminal too small", curses.color_pair(C_DIM))
-            _safe_addstr(stdscr, rows // 2 + 1, max(0, cols // 2 - 12),
-                         "Need at least 60x14", curses.color_pair(C_DIM))
             stdscr.refresh()
             key = stdscr.getch()
-            if key == ord("q") or key == 27:
+            if key in (ord("q"), 27):
                 break
             continue
 
@@ -659,9 +657,10 @@ def _monitor_tui(stdscr):
         min_rss = daemon.config["min_rss_mb"]
         inner = cols - 2
 
+        # ── collect data ──
         frozen_list = []
         candidates = []
-        saved_mb = 0
+        saved_mb = 0.0
         for pid, p in sorted(daemon.procs.items(), key=lambda x: -x[1].rss_mb):
             try:
                 raw = _read_file(f"/proc/{pid}/stat")
@@ -673,203 +672,229 @@ def _monitor_tui(stdscr):
                 frozen_list.append((pid, p))
                 saved_mb += p.rss_mb
             elif not daemon._is_whitelisted(p.name, p.cmdline) and p.rss_mb >= min_rss:
-                idle = (now - p.last_active) / 60
-                candidates.append((pid, p, idle))
+                idle_min = (now - p.last_active) / 60
+                candidates.append((pid, p, idle_min))
         candidates.sort(key=lambda x: -x[2])
 
-        items = []
+        # ── group by process name ──
+        fg = {}
         for pid, p in frozen_list:
-            items.append(("frozen", pid, p, 0))
+            g = fg.setdefault(p.name, {"name": p.name, "pids": [], "total_rss": 0.0})
+            g["pids"].append(pid)
+            g["total_rss"] += p.rss_mb
+        fg_list = sorted(fg.values(), key=lambda g: -g["total_rss"])
+
+        cg = {}
         for pid, p, idle in candidates:
-            items.append(("cand", pid, p, idle))
-        if selected >= len(items):
-            selected = max(0, len(items) - 1)
+            g = cg.setdefault(p.name, {"name": p.name, "pids": [], "total_rss": 0.0, "max_idle": 0.0})
+            g["pids"].append(pid)
+            g["total_rss"] += p.rss_mb
+            g["max_idle"] = max(g["max_idle"], idle)
+        cg_list = sorted(cg.values(), key=lambda g: -g["max_idle"])
+
+        items = fg_list if tab == 0 else cg_list
+        if sel >= len(items):
+            sel = max(0, len(items) - 1)
 
         r = 0
 
         # ── top border ──
-        _hline(r, "╭", "╮")
-        r += 1
+        _hline(r, "╭", "╮"); r += 1
 
-        # ── logo (centered, inside frame) ──
-        logo_width = max(len(l) for l in _LOGO)
-        logo_x = max(1, (cols - logo_width) // 2)
+        # ── logo ──
+        logo_w = max(len(l) for l in _LOGO)
+        lx = max(1, (cols - logo_w) // 2)
         tagline = "auto-freeze for idle apps"
         for i, line in enumerate(_LOGO):
             _safe_addstr(stdscr, r + i, 0, "│", bdr)
-            _safe_addstr(stdscr, r + i, logo_x, line,
+            _safe_addstr(stdscr, r + i, lx, line,
                          curses.color_pair(C_LOGO) | curses.A_BOLD)
             _safe_addstr(stdscr, r + i, cols - 1, "│", bdr)
-        # tagline on the last logo line, right-aligned
-        tag_x = cols - 2 - len(tagline) - 1
-        if tag_x > logo_x + logo_width + 2:
-            _safe_addstr(stdscr, r + len(_LOGO) - 1, tag_x, tagline,
+        tx = cols - 2 - len(tagline) - 1
+        if tx > lx + logo_w + 2:
+            _safe_addstr(stdscr, r + len(_LOGO) - 1, tx, tagline,
                          curses.color_pair(C_STAT_LBL))
         r += len(_LOGO)
 
-        # blank breathing row
-        _framed(r, "")
-        r += 1
+        _framed(r); r += 1
 
         # ── stats ribbon ──
-        def _fmt_mb(mb):
-            return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
-
-        saved_str = _fmt_mb(saved_mb)
-        cards = [
-            ("RAM Saved", saved_str),
-            ("Frozen", str(len(frozen_list))),
-            ("Candidates", str(len(candidates))),
-            ("Threshold", f"{threshold}m / {min_rss}MB"),
-        ]
         _safe_addstr(stdscr, r, 0, "│", bdr)
         cx = 3
-        for label, value in cards:
-            if cx + len(label) + len(value) + 2 >= cols - 1:
+        for label, val in [("RAM Saved", _fmt_mb(saved_mb)),
+                           ("Frozen", str(len(frozen_list))),
+                           ("Candidates", str(len(candidates)))]:
+            if cx + len(label) + len(val) + 2 >= cols - 1:
                 break
-            _safe_addstr(stdscr, r, cx, label,
-                         curses.color_pair(C_STAT_LBL))
-            _safe_addstr(stdscr, r, cx + len(label) + 1, value,
+            _safe_addstr(stdscr, r, cx, label, curses.color_pair(C_STAT_LBL))
+            _safe_addstr(stdscr, r, cx + len(label) + 1, val,
                          curses.color_pair(C_STAT_VAL) | curses.A_BOLD)
-            cx += len(label) + len(value) + 5
+            cx += len(label) + len(val) + 5
         _safe_addstr(stdscr, r, cols - 1, "│", bdr)
         r += 1
 
-        # ── frozen section ──
-        _hline(r, "├", "┤")
-        sec = f" ❄ FROZEN ({len(frozen_list)}) "
-        _safe_addstr(stdscr, r, 2, sec,
-                     curses.color_pair(C_LOGO) | curses.A_BOLD)
-        r += 1
+        _framed(r); r += 1
 
-        # column header
-        hdr = f"  {'PID':>7}  {'RSS':>8}  Name"
-        _framed(r, hdr, curses.color_pair(C_DIM) | curses.A_DIM)
-        r += 1
-
-        # compute how much vertical space to give frozen vs candidates
-        avail = rows - r - 5  # reserve: cand header(2) + footer(3)
-        if frozen_list and candidates:
-            frozen_max = max(2, avail * 2 // 5)
-            cand_max = avail - frozen_max - 2  # 2 for divider + header
-        elif frozen_list:
-            frozen_max = avail
-            cand_max = 0
+        # ── tab bar ──
+        tab0 = f" ❄ Frozen ({len(frozen_list)}) "
+        tab1 = f" ◐ Candidates ({len(candidates)}) "
+        _safe_addstr(stdscr, r, 0, "│", bdr)
+        t0x = 3
+        if tab == 0:
+            _safe_addstr(stdscr, r, t0x, tab0,
+                         curses.color_pair(C_LOGO) | curses.A_BOLD | curses.A_UNDERLINE)
         else:
-            frozen_max = 0
-            cand_max = avail
+            _safe_addstr(stdscr, r, t0x, tab0, curses.color_pair(C_DIM))
+        t1x = t0x + len(tab0) + 3
+        if tab == 1:
+            _safe_addstr(stdscr, r, t1x, tab1,
+                         curses.color_pair(C_CAND) | curses.A_BOLD | curses.A_UNDERLINE)
+        else:
+            _safe_addstr(stdscr, r, t1x, tab1, curses.color_pair(C_DIM))
+        _safe_addstr(stdscr, r, cols - 1, "│", bdr)
+        r += 1
 
-        if frozen_list:
-            show_n = min(len(frozen_list), max(1, frozen_max))
-            for i, (pid, p) in enumerate(frozen_list[:show_n]):
-                is_sel = (i == selected)
-                text = f"  {pid:>7}  {p.rss_mb:>6.0f} MB  {p.name}"
-                _safe_addstr(stdscr, r, 0, "│", bdr)
-                if is_sel:
-                    line = (" ▸" + text[1:])[:inner].ljust(inner)
-                    _safe_addstr(stdscr, r, 1, line,
-                                 curses.color_pair(C_SELECT) | curses.A_BOLD)
+        # ── content divider ──
+        _hline(r, "├", "┤"); r += 1
+
+        # ── content area (blocks) ──
+        content_top = r
+        content_bot = rows - 3  # reserve: message + bottom border + footer
+        content_h = content_bot - content_top
+        BLOCK_H = 3  # name line + bar line + blank separator
+
+        if content_h < 2 or not items:
+            mid = content_top + content_h // 2
+            empty = "No frozen processes" if tab == 0 else "No candidates"
+            for rr in range(content_top, content_bot):
+                if rr == mid:
+                    _framed(rr, f"   {empty}", curses.color_pair(C_DIM))
                 else:
-                    _safe_addstr(stdscr, r, 1, text[:inner].ljust(inner),
-                                 curses.color_pair(C_FROZEN))
-                _safe_addstr(stdscr, r, cols - 1, "│", bdr)
-                r += 1
-            if len(frozen_list) > show_n:
-                more = len(frozen_list) - show_n
-                _framed(r, f"    … +{more} more",
-                         curses.color_pair(C_DIM) | curses.A_DIM)
-                r += 1
+                    _framed(rr)
         else:
-            _framed(r, "  No frozen processes",
-                     curses.color_pair(C_DIM) | curses.A_DIM)
-            r += 1
+            max_vis = max(1, (content_h + 1) // BLOCK_H)
 
-        # ── candidates section ──
-        _hline(r, "├", "┤")
-        sec = f" ◐ CANDIDATES ({len(candidates)}) "
-        _safe_addstr(stdscr, r, 2, sec,
-                     curses.color_pair(C_CAND) | curses.A_BOLD)
-        r += 1
+            # scroll management
+            if sel < scroll:
+                scroll = sel
+            if sel >= scroll + max_vis:
+                scroll = sel - max_vis + 1
+            scroll = max(0, min(scroll, len(items) - max_vis))
 
-        hdr = f"  {'PID':>7}  {'RSS':>8}  {'Idle':>6}  Progress"
-        name_col = 4 + 7 + 2 + 8 + 2 + 6 + 2  # offset to bar start
-        _framed(r, hdr, curses.color_pair(C_DIM) | curses.A_DIM)
-        r += 1
+            visible = items[scroll:scroll + max_vis]
+            max_rss = max(g["total_rss"] for g in items)
+            bar_w = max(8, inner - 6)  # full-width bar
 
-        bar_w = min(20, max(8, cols - 58))
-        sel_offset = len(frozen_list)
-
-        if candidates:
-            show_n = min(len(candidates), max(1, cand_max))
-            for i, (pid, p, idle) in enumerate(candidates[:show_n]):
-                if r >= rows - 3:
+            rr = content_top
+            for vi, group in enumerate(visible):
+                if rr + 1 >= content_bot:
                     break
-                filled = min(bar_w, int(idle / threshold * bar_w))
-                pct = idle / threshold
-                is_sel = (sel_offset + i == selected)
+                idx = scroll + vi
+                is_sel = (idx == sel)
+                name = group["name"]
+                rss_str = _fmt_mb(group["total_rss"])
 
-                prefix = f"  {pid:>7}  {p.rss_mb:>6.0f} MB  {idle:>5.1f}m  "
-                _safe_addstr(stdscr, r, 0, "│", bdr)
-
-                if is_sel:
-                    line = (" ▸" + prefix[1:])[:inner].ljust(inner)
-                    _safe_addstr(stdscr, r, 1, line,
-                                 curses.color_pair(C_SELECT) | curses.A_BOLD)
+                if tab == 0:
+                    n = len(group["pids"])
+                    right = f"{rss_str}   {n} proc{'s' if n != 1 else ''}"
                 else:
-                    _safe_addstr(stdscr, r, 1, prefix[:inner],
-                                 curses.color_pair(C_CAND))
+                    idle = group["max_idle"]
+                    right = f"{rss_str}   idle {idle:.1f}m"
 
-                # progress bar
-                bar_x = 1 + len(prefix)
-                _safe_addstr(stdscr, r, bar_x, "[", curses.color_pair(C_DIM))
-                for j in range(bar_w):
-                    if j < filled:
-                        c = C_BAR_HOT if pct > 0.8 else C_BAR_FULL
-                        _safe_addstr(stdscr, r, bar_x + 1 + j, "█",
-                                     curses.color_pair(c))
+                left = f" ▸ {name}" if is_sel else f"   {name}"
+                gap = inner - len(left) - len(right) - 1
+                if gap < 1:
+                    gap = 1
+
+                # ── name line ──
+                _safe_addstr(stdscr, rr, 0, "│", bdr)
+                if is_sel:
+                    _safe_addstr(stdscr, rr, 1, " " * inner,
+                                 curses.color_pair(C_SELECT))
+                    _safe_addstr(stdscr, rr, 1, left[:inner],
+                                 curses.color_pair(C_SELECT) | curses.A_BOLD)
+                    rx = 1 + len(left) + gap
+                    if rx + len(right) < cols - 1:
+                        _safe_addstr(stdscr, rr, rx, right,
+                                     curses.color_pair(C_SELECT) | curses.A_BOLD)
+                else:
+                    rc = C_FROZEN if tab == 0 else C_CAND
+                    _safe_addstr(stdscr, rr, 1, left[:inner],
+                                 curses.color_pair(rc))
+                    rx = 1 + len(left) + gap
+                    if rx + len(right) < cols - 1:
+                        _safe_addstr(stdscr, rr, rx, right,
+                                     curses.color_pair(C_HEAD))
+                _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
+                rr += 1
+
+                # ── bar line (full-width) ──
+                if rr < content_bot:
+                    _safe_addstr(stdscr, rr, 0, "│", bdr)
+                    bx = 4
+                    if tab == 0:
+                        filled = int(group["total_rss"] / max_rss * bar_w) if max_rss > 0 else 0
+                        filled = max(1, min(bar_w, filled))
+                        for j in range(min(bar_w, cols - bx - 1)):
+                            if j < filled:
+                                _safe_addstr(stdscr, rr, bx + j, "█",
+                                             curses.color_pair(C_BAR_FULL))
+                            else:
+                                _safe_addstr(stdscr, rr, bx + j, "░",
+                                             curses.color_pair(C_BAR_EMPTY))
                     else:
-                        _safe_addstr(stdscr, r, bar_x + 1 + j, "░",
-                                     curses.color_pair(C_BAR_EMPTY))
-                _safe_addstr(stdscr, r, bar_x + 1 + bar_w, "]",
+                        pct = group["max_idle"] / threshold if threshold > 0 else 0
+                        filled = max(0, min(bar_w, int(pct * bar_w)))
+                        for j in range(min(bar_w, cols - bx - 1)):
+                            if j < filled:
+                                pos_pct = (j + 1) / bar_w
+                                if pos_pct > 0.8:
+                                    c = C_BAR_HOT
+                                elif pos_pct > 0.5:
+                                    c = C_CAND
+                                else:
+                                    c = C_BAR_FULL
+                                _safe_addstr(stdscr, rr, bx + j, "█",
+                                             curses.color_pair(c))
+                            else:
+                                _safe_addstr(stdscr, rr, bx + j, "░",
+                                             curses.color_pair(C_BAR_EMPTY))
+                    _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
+                    rr += 1
+
+                # ── separator ──
+                if rr < content_bot and vi < len(visible) - 1:
+                    _framed(rr)
+                    rr += 1
+
+            # fill remaining
+            while rr < content_bot:
+                _framed(rr)
+                rr += 1
+
+            # scroll indicators
+            if scroll > 0:
+                _safe_addstr(stdscr, content_top, cols - 2, "▲",
+                             curses.color_pair(C_DIM))
+            if scroll + max_vis < len(items):
+                _safe_addstr(stdscr, content_bot - 1, cols - 2, "▼",
                              curses.color_pair(C_DIM))
 
-                # process name after bar
-                nx = bar_x + bar_w + 3
-                na = curses.color_pair(C_SELECT) | curses.A_BOLD if is_sel else curses.color_pair(C_HEAD)
-                _safe_addstr(stdscr, r, nx, p.name[:cols - nx - 1], na)
-                _safe_addstr(stdscr, r, cols - 1, "│", bdr)
-                r += 1
+        r = content_bot
 
-            if len(candidates) > show_n:
-                more = len(candidates) - show_n
-                _framed(r, f"    … +{more} more",
-                         curses.color_pair(C_DIM) | curses.A_DIM)
-                r += 1
-        else:
-            _framed(r, "  No candidates above threshold",
-                     curses.color_pair(C_DIM) | curses.A_DIM)
-            r += 1
-
-        # ── message area + bottom border ──
-        # fill remaining space inside the frame
-        while r < rows - 3:
-            _framed(r, "")
-            r += 1
-
-        # status message row
+        # ── message ──
         if message and now - msg_time > 5:
             message = ""
         _framed(r, f"  {message}" if message else "", curses.color_pair(C_MSG))
         r += 1
 
-        # bottom border
-        _hline(r, "╰", "╯")
-        r += 1
+        # ── bottom border ──
+        _hline(r, "╰", "╯"); r += 1
 
-        # ── footer keybinding bar (outside frame) ──
+        # ── footer ──
         _safe_addstr(stdscr, rows - 1, 0, " " * cols, curses.color_pair(C_FOOTER))
-        keys = [("q", "quit"), ("f", "freeze"), ("t", "thaw"),
-                ("↑↓", "select"), ("⏎", "action"), ("r", "refresh")]
+        keys = [("q", "quit"), ("⏎", "thaw/freeze"), ("↑↓", "select"),
+                ("tab", "switch"), ("f", "freeze"), ("t", "thaw")]
         fx = 1
         for k, d in keys:
             if fx >= cols - 4:
@@ -885,51 +910,58 @@ def _monitor_tui(stdscr):
 
         # ── input ──
         key = stdscr.getch()
-        if key == ord("q") or key == 27:
+        if key in (ord("q"), 27):
             break
         elif key == ord("r"):
             message = ""
         elif key == curses.KEY_RESIZE:
             pass
+        elif key == ord("\t") or key == curses.KEY_BTAB:
+            tab = 1 - tab
+            sel = 0
+            scroll = 0
         elif key == curses.KEY_UP:
-            selected = max(0, selected - 1)
+            sel = max(0, sel - 1)
         elif key == curses.KEY_DOWN:
-            selected = min(len(items) - 1, selected + 1) if items else 0
+            sel = min(len(items) - 1, sel + 1) if items else 0
         elif key in (ord("\n"), 10, 13):
-            if items and 0 <= selected < len(items):
-                kind, sel_pid, sel_p, _ = items[selected]
-                if kind == "frozen":
-                    daemon.thaw_pid(sel_pid)
-                    message = f"✓ Thawed {sel_p.name} (PID {sel_pid})"
+            if items and 0 <= sel < len(items):
+                group = items[sel]
+                if tab == 0:
+                    for pid in group["pids"]:
+                        daemon.thaw_pid(pid)
+                    n = len(group["pids"])
+                    message = f"✓ Thawed {group['name']} ({n} proc{'s' if n != 1 else ''})"
                 else:
-                    daemon.freeze_pid(sel_pid, reason="monitor")
-                    message = f"❄ Froze {sel_p.name} (PID {sel_pid})"
+                    for pid in group["pids"]:
+                        daemon.freeze_pid(pid, reason="monitor")
+                    n = len(group["pids"])
+                    message = f"❄ Froze {group['name']} ({n} proc{'s' if n != 1 else ''})"
                 msg_time = now
         elif key in (ord("f"), ord("t")):
             action = "freeze" if key == ord("f") else "thaw"
             curses.curs_set(1)
-            prompt_text = f"  {action} ▸ "
-            # draw prompt in the message row (rows - 3)
-            _safe_addstr(stdscr, rows - 3, 0, "│", bdr)
-            _safe_addstr(stdscr, rows - 3, 1, (" " * (cols - 2)), 0)
-            _safe_addstr(stdscr, rows - 3, 1, prompt_text,
+            prompt = f"  {action} ▸ "
+            mr = rows - 3
+            _safe_addstr(stdscr, mr, 0, "│", bdr)
+            _safe_addstr(stdscr, mr, 1, " " * (cols - 2), 0)
+            _safe_addstr(stdscr, mr, 1, prompt,
                          curses.color_pair(C_PROMPT) | curses.A_BOLD)
-            _safe_addstr(stdscr, rows - 3, cols - 1, "│", bdr)
+            _safe_addstr(stdscr, mr, cols - 1, "│", bdr)
             stdscr.refresh()
             curses.echo()
             try:
-                name_bytes = stdscr.getstr(rows - 3, 1 + len(prompt_text), 40)
+                nb = stdscr.getstr(mr, 1 + len(prompt), 40)
             except curses.error:
-                name_bytes = b""
+                nb = b""
             curses.noecho()
             curses.curs_set(0)
-            name_input = name_bytes.decode("utf-8", errors="replace").strip().lower()
-
-            if name_input:
+            ni = nb.decode("utf-8", errors="replace").strip().lower()
+            if ni:
                 if action == "freeze":
                     match = None
                     for pid, p in sorted(daemon.procs.items(), key=lambda x: -x[1].rss_mb):
-                        if name_input in p.name.lower() and not daemon._is_whitelisted(p.name, p.cmdline):
+                        if ni in p.name.lower() and not daemon._is_whitelisted(p.name, p.cmdline):
                             match = (pid, p)
                             break
                     if match:
@@ -937,11 +969,11 @@ def _monitor_tui(stdscr):
                         daemon.freeze_pid(pid, reason="monitor")
                         message = f"❄ Froze {p.name} (PID {pid})"
                     else:
-                        message = f"✗ No match: {name_input}"
+                        message = f"✗ No match: {ni}"
                 else:
                     match = None
                     for pid, p in daemon.procs.items():
-                        if name_input in p.name.lower() and daemon._is_stopped(pid):
+                        if ni in p.name.lower() and daemon._is_stopped(pid):
                             match = (pid, p)
                             break
                     if match:
@@ -949,7 +981,7 @@ def _monitor_tui(stdscr):
                         daemon.thaw_pid(pid)
                         message = f"✓ Thawed {p.name} (PID {pid})"
                     else:
-                        message = f"✗ No frozen match: {name_input}"
+                        message = f"✗ No frozen match: {ni}"
                 msg_time = now
             else:
                 message = ""
