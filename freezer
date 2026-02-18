@@ -342,6 +342,33 @@ class FreezerDaemon:
                     reason=f"idle {idle / 60:.0f}min, {p.rss_mb:.0f}MB",
                 )
 
+    # ── status + thaw-request ────────────────────────────────
+
+    def _write_status(self):
+        frozen_list = []
+        saved_mb = 0
+        for pid in list(self.frozen):
+            if pid in self.procs:
+                p = self.procs[pid]
+                frozen_list.append({"pid": pid, "name": p.name, "rss_mb": round(p.rss_mb)})
+                saved_mb += p.rss_mb
+        data = {"frozen": frozen_list, "saved_mb": round(saved_mb), "active": True}
+        try:
+            STATUS_FILE.write_text(json.dumps(data) + "\n")
+        except Exception:
+            pass
+
+    def _check_thaw(self):
+        try:
+            if THAW_FILE.exists():
+                raw = THAW_FILE.read_text().strip()
+                THAW_FILE.unlink(missing_ok=True)
+                if raw:
+                    pid = int(raw)
+                    self.thaw_pid(pid)
+        except (ValueError, IOError):
+            pass
+
     # ── shutdown ────────────────────────────────────────────
 
     def _shutdown(self, signum, frame):
@@ -351,6 +378,11 @@ class FreezerDaemon:
                 os.kill(pid, signal.SIGCONT)
             except Exception:
                 pass
+        try:
+            STATUS_FILE.write_text(json.dumps({"frozen": [], "saved_mb": 0, "active": False}) + "\n")
+        except Exception:
+            pass
+        THAW_FILE.unlink(missing_ok=True)
         PID_FILE.unlink(missing_ok=True)
         sys.exit(0)
 
@@ -389,12 +421,14 @@ class FreezerDaemon:
 
         while True:
             self._check_focus()
+            self._check_thaw()
 
             self._tick += 1
             if self._tick >= scans_per_tick:
                 self._tick = 0
                 self.scan()
                 self._check_freeze()
+                self._write_status()
 
             time.sleep(cfg["poll_interval"])
 
