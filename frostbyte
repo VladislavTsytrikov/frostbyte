@@ -17,6 +17,7 @@ import json
 import logging
 import argparse
 import curses
+import math
 import random
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -600,7 +601,7 @@ def _monitor_tui(stdscr):
     """Live curses dashboard — modern TUI with visual blocks."""
     curses.use_default_colors()
     curses.curs_set(0)
-    stdscr.timeout(16)  # ~60fps
+    stdscr.timeout(33)  # ~30fps
     _MOUSE_MOVE = getattr(curses, 'REPORT_MOUSE_POSITION', 0)
     curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
@@ -682,7 +683,7 @@ def _monitor_tui(stdscr):
     hover = -1        # block under mouse (visual only, separate from sel)
     _frame = 0
     _last_frame = 0.0
-    _snow = []        # [(x, y_float, char, speed_rows_per_sec), ...]
+    _snow = []        # [(x_base, y_start, t_born, char, speed, phase), ...]
     _snow_chars = "·✧✦❄❆"
 
     def _framed(row, content="", attr=0):
@@ -784,7 +785,7 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, r, cols - 1, "│", bdr)
             r += 1
 
-        _logo_shift = int(now_t * 0.8) % 5
+        _logo_shift = int(now_t * 0.35) % 5
         for i, line in enumerate(logo):
             _safe_addstr(stdscr, r + i, 0, "│", bdr)
             if use_big:
@@ -968,7 +969,7 @@ def _monitor_tui(stdscr):
                         _safe_addstr(stdscr, rr, 1, " " * inner,
                                      curses.color_pair(C_HOVER))
                     bx = 4
-                    spark = int(now_t * 4 + vi * 2.7) % (bar_w + 12)
+                    spark = int(now_t * 1.8 + vi * 3.1) % (bar_w + 20)
                     if tab == 0:
                         filled = int(group["total_rss"] / max_rss * bar_w) if max_rss > 0 else 0
                         filled = max(1, min(bar_w, filled))
@@ -1046,21 +1047,24 @@ def _monitor_tui(stdscr):
                          curses.color_pair(C_FOOTER))
             fx += len(d) + 2
 
-        # ── snowflake animation (time-based) ──
-        for i in range(len(_snow)):
-            sx, sy, sc, ss = _snow[i]
-            _snow[i] = (sx + random.uniform(-1.5, 1.5) * dt,
-                        sy + ss * dt, sc, ss)
-        _snow = [(sx, sy, sc, ss) for sx, sy, sc, ss in _snow
-                 if content_top <= int(sy) < content_bot]
-        if len(_snow) < 30 and random.random() < 3.0 * dt:
-            sx = random.randint(3, max(4, cols - 3))
-            sc = random.choice(_snow_chars)
-            ss = random.uniform(1.0, 4.0)  # rows per second
-            _snow.append((float(sx), float(content_top), sc, ss))
-        for sx, sy, sc, ss in _snow:
-            iy, ix = int(sy), int(sx)
-            if 1 < ix < cols - 1:
+        # ── snowflake animation (deterministic sine-wave) ──
+        _snow = [(xb, ys, tb, sc, sp, ph)
+                 for xb, ys, tb, sc, sp, ph in _snow
+                 if ys + sp * (now_t - tb) < content_bot]
+        if len(_snow) < 25 and random.random() < 2.0 * dt:
+            _snow.append((
+                float(random.randint(3, max(4, cols - 3))),
+                float(content_top),
+                now_t,
+                random.choice(_snow_chars),
+                random.uniform(0.8, 2.5),
+                random.uniform(0, 6.283),
+            ))
+        for xb, ys, tb, sc, sp, ph in _snow:
+            elapsed = now_t - tb
+            ix = int(xb + 1.8 * math.sin(elapsed * 0.6 + ph))
+            iy = int(ys + sp * elapsed)
+            if 1 < ix < cols - 1 and content_top <= iy < content_bot:
                 try:
                     ch = stdscr.inch(iy, ix) & 0xFF
                     if ch == ord(' '):
