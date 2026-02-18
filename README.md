@@ -1,12 +1,6 @@
-<h1 align="center">
-  <br>
-  <img src="assets/social-preview.png" alt="FrostByte" width="520">
-  <br>
-  FrostByte
-  <br>
-</h1>
-
-<h4 align="center">Your idle apps are wasting gigabytes of RAM. FrostByte fixes that.</h4>
+<p align="center">
+  <img src="assets/banner.svg" alt="FrostByte — auto-freeze idle apps, reclaim your RAM" width="100%">
+</p>
 
 <p align="center">
   <a href="https://github.com/VladislavTsytrikov/frostbyte/releases/latest"><img src="https://img.shields.io/github/v/release/VladislavTsytrikov/frostbyte?style=for-the-badge&color=00b4d8&label=release" alt="Release"></a>
@@ -14,7 +8,6 @@
   <img src="https://img.shields.io/badge/python-3.10+-3776ab.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/GNOME-45–48-4a86cf.svg?style=for-the-badge&logo=gnome&logoColor=white" alt="GNOME Shell">
   <img src="https://img.shields.io/badge/Wayland-native-green.svg?style=for-the-badge&logo=wayland&logoColor=white" alt="Wayland">
-  <img src="https://img.shields.io/badge/zero_deps-single_file-brightgreen.svg?style=for-the-badge" alt="Zero deps">
 </p>
 
 <p align="center">
