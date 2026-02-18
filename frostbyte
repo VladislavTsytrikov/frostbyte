@@ -680,11 +680,7 @@ def _monitor_tui(stdscr):
     curses.use_default_colors()
     curses.curs_set(0)
     stdscr.timeout(33)  # ~30fps — instant hover response
-    _MOUSE_MOVE = getattr(curses, 'REPORT_MOUSE_POSITION', 0)
-    curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
-    # enable terminal-level mouse motion tracking (xterm any-event mode)
-    sys.stdout.write('\033[?1003h')
-    sys.stdout.flush()
+    curses.mousemask(curses.ALL_MOUSE_EVENTS)
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
 
     use_256 = curses.COLORS >= 256
@@ -1170,8 +1166,6 @@ def _monitor_tui(stdscr):
         do_skip = False
 
         if key in (ord("q"), 27):
-            sys.stdout.write('\033[?1003l')
-            sys.stdout.flush()
             break
         elif key == ord("r"):
             message = ""
@@ -1195,20 +1189,12 @@ def _monitor_tui(stdscr):
         elif key == curses.KEY_MOUSE:
             try:
                 _, mx, my, _, bstate = curses.getmouse()
-                # always update hover on any mouse event
-                hover = -1
-                for y0, y1, bi in _block_y:
-                    if y0 <= my < y1:
-                        hover = bi
-                        break
-                # handle buttons/clicks
-                _click = bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
-                                   | curses.BUTTON1_DOUBLE_CLICKED)
                 if bstate & curses.BUTTON4_PRESSED:
                     sel = max(0, sel - 1)
                 elif bstate & _B5:
                     sel = min(len(items) - 1, sel + 1) if items else 0
-                elif _click:
+                elif bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+                               | curses.BUTTON1_RELEASED | curses.BUTTON1_DOUBLE_CLICKED):
                     if my == _tab_row:
                         if 3 <= mx < _tab0_end:
                             tab = 0; sel = 0; scroll = 0; hover = -1
@@ -1223,6 +1209,7 @@ def _monitor_tui(stdscr):
                     else:
                         for y0, y1, bi in _block_y:
                             if y0 <= my < y1:
+                                hover = bi
                                 if bi == sel:
                                     perform_action = True
                                 else:
@@ -1255,9 +1242,7 @@ def _monitor_tui(stdscr):
                 nb = b""
             curses.noecho()
             curses.curs_set(0)
-            curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
-            sys.stdout.write('\033[?1003h')
-            sys.stdout.flush()
+            curses.mousemask(curses.ALL_MOUSE_EVENTS)
             ni = nb.decode("utf-8", errors="replace").strip().lower()
             if ni:
                 if action == "freeze":
