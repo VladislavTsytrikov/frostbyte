@@ -626,14 +626,54 @@ _LOGO_BIG = [" ".join(r) for r in zip(
 
 _SNOW = "·  ❄  ·  ✦  ·  ❄  ·  ✦  ·  ❄  ·  ✦  ·  ❄  ·"
 
+_STRINGS = {
+    "en": {
+        "ram_saved": "RAM Saved", "frozen": "Frozen", "candidates": "Candidates",
+        "no_frozen": "No frozen processes", "no_candidates": "No candidates",
+        "tab_frozen": " ❄ Frozen ({}) ", "tab_cand": " ◐ Candidates ({}) ",
+        "tagline": "❄  auto-freeze for idle apps  ❄",
+        "tagline_sm": "auto-freeze for idle apps",
+        "proc": "proc", "procs": "procs", "idle": "idle",
+        "btn_thaw": " Thaw ", "btn_freeze": " Freeze ", "btn_skip": " Skip ",
+        "froze": "❄ Froze", "thawed": "✓ Thawed", "excluded": "⊘ Excluded",
+        "already_excl": "already excluded",
+        "no_match": "✗ No match", "no_frozen_match": "✗ No frozen match",
+        "too_small": "Terminal too small",
+        "k_quit": "quit", "k_action": "thaw/freeze", "k_select": "select",
+        "k_switch": "switch", "k_freeze": "freeze", "k_thaw": "thaw",
+        "k_exclude": "exclude", "k_lang": "язык",
+        "freeze_prompt": "freeze ▸ ", "thaw_prompt": "thaw ▸ ",
+    },
+    "ru": {
+        "ram_saved": "ОЗУ", "frozen": "Заморож.", "candidates": "Кандидаты",
+        "no_frozen": "Нет замороженных", "no_candidates": "Нет кандидатов",
+        "tab_frozen": " ❄ Заморож. ({}) ", "tab_cand": " ◐ Кандидаты ({}) ",
+        "tagline": "❄  авто-заморозка неактивных приложений  ❄",
+        "tagline_sm": "авто-заморозка приложений",
+        "proc": "проц", "procs": "проц", "idle": "простой",
+        "btn_thaw": " Разм. ", "btn_freeze": " Замор. ", "btn_skip": " Искл. ",
+        "froze": "❄ Заморожен", "thawed": "✓ Разморожен", "excluded": "⊘ Исключён",
+        "already_excl": "уже исключён",
+        "no_match": "✗ Не найдено", "no_frozen_match": "✗ Нет замороженного",
+        "too_small": "Терминал слишком мал",
+        "k_quit": "выход", "k_action": "действие", "k_select": "выбор",
+        "k_switch": "вкладка", "k_freeze": "замор.", "k_thaw": "разм.",
+        "k_exclude": "искл.", "k_lang": "lang",
+        "freeze_prompt": "заморозить ▸ ", "thaw_prompt": "разморозить ▸ ",
+    },
+}
+
 
 def _monitor_tui(stdscr):
     """Live curses dashboard — modern TUI with visual blocks."""
     curses.use_default_colors()
     curses.curs_set(0)
-    stdscr.timeout(33)  # ~30fps
+    stdscr.timeout(200)  # 5fps render — keeps animations smooth without lag
     _MOUSE_MOVE = getattr(curses, 'REPORT_MOUSE_POSITION', 0)
     curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
+    # enable terminal-level mouse motion tracking (xterm any-event mode)
+    sys.stdout.write('\033[?1003h\033[?1006h')
+    sys.stdout.flush()
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
 
     use_256 = curses.COLORS >= 256
@@ -711,6 +751,8 @@ def _monitor_tui(stdscr):
     _btn_act = None   # (y, x_start, x_end) for action button
     _btn_skip = None  # (y, x_start, x_end) for skip button
     hover = -1        # block under mouse (visual only, separate from sel)
+    lang = "en"
+    S = _STRINGS[lang]
     _frame = 0
     _last_frame = 0.0
     _snow = []        # [(x_base, y_start, t_born, char, speed, phase), ...]
@@ -744,7 +786,7 @@ def _monitor_tui(stdscr):
 
         if rows < 14 or cols < 60:
             _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 10),
-                         "Terminal too small", curses.color_pair(C_DIM))
+                         S["too_small"], curses.color_pair(C_DIM))
             stdscr.refresh()
             key = stdscr.getch()
             if key in (ord("q"), 27):
@@ -815,7 +857,7 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, r, cols - 1, "│", bdr)
             r += 1
 
-        _logo_shift = int(now_t * 0.35) % 5
+        _logo_shift = int(now_t * 0.15) % 5
         for i, line in enumerate(logo):
             _safe_addstr(stdscr, r + i, 0, "│", bdr)
             if use_big:
@@ -835,7 +877,7 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, r, cols - 1, "│", bdr)
             r += 1
             # tagline centered below logo
-            tagline = "❄  auto-freeze for idle apps  ❄"
+            tagline = S["tagline"]
             ttx = max(1, (cols - len(tagline)) // 2)
             _safe_addstr(stdscr, r, 0, "│", bdr)
             _safe_addstr(stdscr, r, ttx, tagline,
@@ -843,7 +885,7 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, r, cols - 1, "│", bdr)
             r += 1
         else:
-            tagline = "auto-freeze for idle apps"
+            tagline = S["tagline_sm"]
             tx = cols - 2 - len(tagline) - 1
             if tx > lx + logo_w + 2:
                 _safe_addstr(stdscr, r - 1, tx, tagline,
@@ -854,9 +896,9 @@ def _monitor_tui(stdscr):
         # ── stats ribbon ──
         _safe_addstr(stdscr, r, 0, "│", bdr)
         cx = 3
-        for label, val in [("RAM Saved", _fmt_mb(saved_mb)),
-                           ("Frozen", str(len(frozen_list))),
-                           ("Candidates", str(len(candidates)))]:
+        for label, val in [(S["ram_saved"], _fmt_mb(saved_mb)),
+                           (S["frozen"], str(len(frozen_list))),
+                           (S["candidates"], str(len(candidates)))]:
             if cx + len(label) + len(val) + 2 >= cols - 1:
                 break
             _safe_addstr(stdscr, r, cx, label, curses.color_pair(C_STAT_LBL))
@@ -869,8 +911,8 @@ def _monitor_tui(stdscr):
         _framed(r); r += 1
 
         # ── tab bar ──
-        tab0 = f" ❄ Frozen ({len(frozen_list)}) "
-        tab1 = f" ◐ Candidates ({len(candidates)}) "
+        tab0 = S["tab_frozen"].format(len(frozen_list))
+        tab1 = S["tab_cand"].format(len(candidates))
         _safe_addstr(stdscr, r, 0, "│", bdr)
         t0x = 3
         if tab == 0:
@@ -903,7 +945,7 @@ def _monitor_tui(stdscr):
         if content_h < 2 or not items:
             _block_y = []
             mid = content_top + content_h // 2
-            empty = "No frozen processes" if tab == 0 else "No candidates"
+            empty = S["no_frozen"] if tab == 0 else S["no_candidates"]
             for rr in range(content_top, content_bot):
                 if rr == mid:
                     _framed(rr, f"   {empty}", curses.color_pair(C_DIM))
@@ -937,10 +979,11 @@ def _monitor_tui(stdscr):
 
                 if tab == 0:
                     n = len(group["pids"])
-                    right = f"{rss_str}   {n} proc{'s' if n != 1 else ''}"
+                    plbl = S["procs"] if n != 1 else S["proc"]
+                    right = f"{rss_str}   {n} {plbl}"
                 else:
                     idle = group["max_idle"]
-                    right = f"{rss_str}   idle {idle:.1f}m"
+                    right = f"{rss_str}   {S['idle']} {idle:.1f}m"
 
                 left = f" ▸ {name}" if is_sel else (f" › {name}" if is_hover else f"   {name}")
                 gap = inner - len(left) - len(right) - 1
@@ -950,8 +993,8 @@ def _monitor_tui(stdscr):
                 # ── name line ──
                 _safe_addstr(stdscr, rr, 0, "│", bdr)
                 if is_sel:
-                    btn_lbl = " Thaw " if tab == 0 else " Freeze "
-                    skip_lbl = " Skip "
+                    btn_lbl = S["btn_thaw"] if tab == 0 else S["btn_freeze"]
+                    skip_lbl = S["btn_skip"]
                     skip_x = cols - 1 - len(skip_lbl)
                     act_x = skip_x - 1 - len(btn_lbl)
                     _safe_addstr(stdscr, rr, 1, " " * inner,
@@ -999,36 +1042,38 @@ def _monitor_tui(stdscr):
                         _safe_addstr(stdscr, rr, 1, " " * inner,
                                      curses.color_pair(C_HOVER))
                     bx = 4
-                    spark = int(now_t * 1.8 + vi * 3.1) % (bar_w + 20)
+                    avail = min(bar_w, cols - bx - 1)
                     if tab == 0:
                         filled = int(group["total_rss"] / max_rss * bar_w) if max_rss > 0 else 0
-                        filled = max(1, min(bar_w, filled))
-                        for j in range(min(bar_w, cols - bx - 1)):
-                            if j < filled:
-                                shimmer = curses.A_BOLD if spark - 1 <= j <= spark + 1 else 0
-                                _safe_addstr(stdscr, rr, bx + j, "█",
-                                             curses.color_pair(C_BAR_FULL) | shimmer)
-                            else:
-                                _safe_addstr(stdscr, rr, bx + j, "░",
-                                             curses.color_pair(C_BAR_EMPTY))
+                        filled = max(1, min(avail, filled))
+                        _safe_addstr(stdscr, rr, bx, "█" * filled,
+                                     curses.color_pair(C_BAR_FULL))
+                        if filled < avail:
+                            _safe_addstr(stdscr, rr, bx + filled,
+                                         "░" * (avail - filled),
+                                         curses.color_pair(C_BAR_EMPTY))
                     else:
                         pct = group["max_idle"] / threshold if threshold > 0 else 0
-                        filled = max(0, min(bar_w, int(pct * bar_w)))
-                        for j in range(min(bar_w, cols - bx - 1)):
-                            if j < filled:
-                                pos_pct = (j + 1) / bar_w
-                                if pos_pct > 0.8:
-                                    c = C_BAR_HOT
-                                elif pos_pct > 0.5:
-                                    c = C_CAND
-                                else:
-                                    c = C_BAR_FULL
-                                shimmer = curses.A_BOLD if spark - 1 <= j <= spark + 1 else 0
-                                _safe_addstr(stdscr, rr, bx + j, "█",
-                                             curses.color_pair(c) | shimmer)
-                            else:
-                                _safe_addstr(stdscr, rr, bx + j, "░",
-                                             curses.color_pair(C_BAR_EMPTY))
+                        filled = max(0, min(avail, int(pct * bar_w)))
+                        # split bar into color zones
+                        cut1 = int(0.5 * bar_w)
+                        cut2 = int(0.8 * bar_w)
+                        seg_end = [min(filled, cut1),
+                                   min(filled, cut2),
+                                   filled]
+                        seg_start = [0, cut1, cut2]
+                        seg_color = [C_BAR_FULL, C_CAND, C_BAR_HOT]
+                        for si in range(3):
+                            s0 = max(0, seg_start[si])
+                            s1 = min(avail, seg_end[si])
+                            if s1 > s0:
+                                _safe_addstr(stdscr, rr, bx + s0,
+                                             "█" * (s1 - s0),
+                                             curses.color_pair(seg_color[si]))
+                        if filled < avail:
+                            _safe_addstr(stdscr, rr, bx + filled,
+                                         "░" * (avail - filled),
+                                         curses.color_pair(C_BAR_EMPTY))
                     _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
                     rr += 1
 
@@ -1064,8 +1109,10 @@ def _monitor_tui(stdscr):
 
         # ── footer ──
         _safe_addstr(stdscr, rows - 1, 0, " " * cols, curses.color_pair(C_FOOTER))
-        keys = [("q", "quit"), ("⏎/click", "thaw/freeze"), ("↑↓/scroll", "select"),
-                ("tab", "switch"), ("f", "freeze"), ("t", "thaw"), ("e", "exclude")]
+        keys = [("q", S["k_quit"]), ("⏎/click", S["k_action"]),
+                ("↑↓/scroll", S["k_select"]), ("tab", S["k_switch"]),
+                ("f", S["k_freeze"]), ("t", S["k_thaw"]),
+                ("e", S["k_exclude"]), ("L", S["k_lang"])]
         fx = 1
         for k, d in keys:
             if fx >= cols - 4:
@@ -1077,31 +1124,26 @@ def _monitor_tui(stdscr):
                          curses.color_pair(C_FOOTER))
             fx += len(d) + 2
 
-        # ── snowflake animation (deterministic sine-wave) ──
+        # ── snowflake animation (lightweight, deterministic) ──
         _snow = [(xb, ys, tb, sc, sp, ph)
                  for xb, ys, tb, sc, sp, ph in _snow
                  if ys + sp * (now_t - tb) < content_bot]
-        if len(_snow) < 25 and random.random() < 2.0 * dt:
+        if len(_snow) < 6 and random.random() < 0.3:
             _snow.append((
                 float(random.randint(3, max(4, cols - 3))),
                 float(content_top),
                 now_t,
                 random.choice(_snow_chars),
-                random.uniform(0.8, 2.5),
+                random.uniform(0.6, 1.5),
                 random.uniform(0, 6.283),
             ))
         for xb, ys, tb, sc, sp, ph in _snow:
             elapsed = now_t - tb
-            ix = int(xb + 1.8 * math.sin(elapsed * 0.6 + ph))
+            ix = int(xb + 1.2 * math.sin(elapsed * 0.4 + ph))
             iy = int(ys + sp * elapsed)
             if 1 < ix < cols - 1 and content_top <= iy < content_bot:
-                try:
-                    ch = stdscr.inch(iy, ix) & 0xFF
-                    if ch == ord(' '):
-                        _safe_addstr(stdscr, iy, ix, sc,
-                                     curses.color_pair(C_DIM))
-                except curses.error:
-                    pass
+                _safe_addstr(stdscr, iy, ix, sc,
+                             curses.color_pair(C_DIM))
 
         stdscr.refresh()
 
@@ -1111,6 +1153,8 @@ def _monitor_tui(stdscr):
         do_skip = False
 
         if key in (ord("q"), 27):
+            sys.stdout.write('\033[?1003l\033[?1006l')
+            sys.stdout.flush()
             break
         elif key == ord("r"):
             message = ""
@@ -1177,6 +1221,9 @@ def _monitor_tui(stdscr):
                             break
             except curses.error:
                 pass
+        elif key == ord("L"):
+            lang = "ru" if lang == "en" else "en"
+            S = _STRINGS[lang]
         elif key == ord("e"):
             if items and 0 <= sel < len(items):
                 do_skip = True
@@ -1184,7 +1231,7 @@ def _monitor_tui(stdscr):
             action = "freeze" if key == ord("f") else "thaw"
             curses.curs_set(1)
             curses.mousemask(0)
-            prompt = f"  {action} ▸ "
+            prompt = "  " + (S["freeze_prompt"] if action == "freeze" else S["thaw_prompt"])
             mr = rows - 3
             _safe_addstr(stdscr, mr, 0, "│", bdr)
             _safe_addstr(stdscr, mr, 1, " " * (cols - 2), 0)
@@ -1200,6 +1247,8 @@ def _monitor_tui(stdscr):
             curses.noecho()
             curses.curs_set(0)
             curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
+            sys.stdout.write('\033[?1003h\033[?1006h')
+            sys.stdout.flush()
             ni = nb.decode("utf-8", errors="replace").strip().lower()
             if ni:
                 if action == "freeze":
@@ -1211,9 +1260,9 @@ def _monitor_tui(stdscr):
                     if match:
                         pid, p = match
                         daemon.freeze_pid(pid, reason="monitor")
-                        message = f"❄ Froze {p.name} (PID {pid})"
+                        message = f"{S['froze']} {p.name} (PID {pid})"
                     else:
-                        message = f"✗ No match: {ni}"
+                        message = f"{S['no_match']}: {ni}"
                 else:
                     match = None
                     for pid, p in daemon.procs.items():
@@ -1223,9 +1272,9 @@ def _monitor_tui(stdscr):
                     if match:
                         pid, p = match
                         daemon.thaw_pid(pid)
-                        message = f"✓ Thawed {p.name} (PID {pid})"
+                        message = f"{S['thawed']} {p.name} (PID {pid})"
                     else:
-                        message = f"✗ No frozen match: {ni}"
+                        message = f"{S['no_frozen_match']}: {ni}"
                 msg_time = now
             else:
                 message = ""
@@ -1236,20 +1285,22 @@ def _monitor_tui(stdscr):
                 for pid in group["pids"]:
                     daemon.thaw_pid(pid)
                 n = len(group["pids"])
-                message = f"✓ Thawed {group['name']} ({n} proc{'s' if n != 1 else ''})"
+                plbl = S["procs"] if n != 1 else S["proc"]
+                message = f"{S['thawed']} {group['name']} ({n} {plbl})"
             else:
                 for pid in group["pids"]:
                     daemon.freeze_pid(pid, reason="monitor")
                 n = len(group["pids"])
-                message = f"❄ Froze {group['name']} ({n} proc{'s' if n != 1 else ''})"
+                plbl = S["procs"] if n != 1 else S["proc"]
+                message = f"{S['froze']} {group['name']} ({n} {plbl})"
             msg_time = now
 
         if do_skip and items and 0 <= sel < len(items):
             group = items[sel]
             if daemon.add_to_whitelist(group["name"]):
-                message = f"⊘ Excluded '{group['name']}' from freezing"
+                message = f"{S['excluded']} '{group['name']}'"
             else:
-                message = f"  '{group['name']}' already excluded"
+                message = f"  '{group['name']}' {S['already_excl']}"
             msg_time = now
 
 
