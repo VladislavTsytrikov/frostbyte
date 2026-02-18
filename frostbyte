@@ -539,6 +539,10 @@ class FrostByteDaemon:
         tree = [pid] + self._children(pid)
         count = 0
         for p in tree:
+            # skip whitelisted children (e.g. terminal child apps)
+            if p in self.procs and self._is_whitelisted(self.procs[p].name, self.procs[p].cmdline):
+                if p != pid:
+                    continue
             try:
                 os.kill(p, signal.SIGSTOP)
                 self.frozen.add(p)
@@ -886,6 +890,13 @@ class FrostByteDaemon:
         )
 
         scans_per_tick = max(1, cfg["scan_interval"] // cfg["poll_interval"])
+
+        # thaw orphaned stopped processes from a previous daemon crash
+        self.scan()
+        for pid, p in self.procs.items():
+            if self._is_stopped(pid):
+                self.thaw_pid(pid)
+                logging.info(f"ORPHAN-THAW {p.name} pid={pid}")
 
         try:
             while not self._should_exit:
