@@ -43,7 +43,6 @@ DEFAULT_CONFIG = {
         "pulseaudio",
         "pipewire",
         "wireplumber",
-        "claude",
         "tilix",
         "gnome-terminal",
         "kitty",
