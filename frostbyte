@@ -18,6 +18,7 @@ import logging
 import argparse
 import curses
 import math
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
@@ -30,6 +31,237 @@ CONFIG_DIR = Path.home() / ".config" / "frostbyte"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "frostbyte.log"
 PID_FILE = Path(f"/tmp/frostbyte-{_UID}.pid")
+EXTENSION_UUID = "frostbyte@cryogen"
+EXTENSION_DIR = (
+    Path.home() / ".local" / "share" / "gnome-shell" / "extensions" / EXTENSION_UUID
+)
+SERVICE_DIR = Path.home() / ".config" / "systemd" / "user"
+BIN_DIR = Path.home() / ".local" / "bin"
+
+# Cache own source at module load time (needed for `curl | python3 - install`)
+try:
+    _SELF_PATH = Path(__file__).resolve()
+    _SELF_SOURCE = _SELF_PATH.read_bytes() if _SELF_PATH.is_file() else None
+except (NameError, OSError):
+    _SELF_PATH = None
+    _SELF_SOURCE = None
+
+# ── Embedded resources (installed by `frostbyte install`) ────────────
+
+_EXTENSION_JS = r'''import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
+import Clutter from 'gi://Clutter';
+import St from 'gi://St';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+
+function getUid() {
+    try {
+        const [ok, contents] = GLib.file_get_contents('/proc/self/status');
+        const m = new TextDecoder().decode(contents).match(/^Uid:\t(\d+)/m);
+        return m ? m[1] : '1000';
+    } catch (_) {
+        return '1000';
+    }
+}
+
+const UID = getUid();
+const FOCUS_FILE = `/tmp/frostbyte-focus-${UID}`;
+const STATUS_FILE = `/tmp/frostbyte-status-${UID}.json`;
+const THAW_FILE = `/tmp/frostbyte-thaw-${UID}`;
+
+export default class FrostByteExtension extends Extension {
+    enable() {
+        // --- Ensure daemon is running ---
+        try {
+            if (!GLib.file_test(`/tmp/frostbyte-${UID}.pid`, GLib.FileTest.EXISTS)) {
+                GLib.spawn_command_line_async(
+                    'systemctl --user start frostbyte.service');
+            }
+        } catch (_) {}
+
+        // --- Focus tracking ---
+        this._focusId = global.display.connect('notify::focus-window', () => {
+            const win = global.display.focus_window;
+            if (win) this._writeFocus(win.get_pid());
+        });
+
+        this._captureId = global.stage.connect('captured-event', (actor, event) => {
+            if (event.type() === Clutter.EventType.BUTTON_PRESS) {
+                const [x, y] = event.get_coords();
+                const pid = this._windowPidAtPos(x, y);
+                if (pid > 0) this._writeFocus(pid);
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+
+        // --- Panel indicator ---
+        this._indicator = new PanelMenu.Button(0.0, 'FrostByte', false);
+
+        this._icon = new St.Label({
+            text: '\u2744',
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'system-status-icon',
+            style: 'font-size: 16px; padding: 0 4px;',
+        });
+        this._indicator.add_child(this._icon);
+
+        this._buildMenu();
+
+        this._indicator.menu.connect('open-state-changed', (_menu, open) => {
+            if (open) {
+                this._refresh();
+                this._pollId = GLib.timeout_add_seconds(
+                    GLib.PRIORITY_DEFAULT, 3, () => {
+                        if (this._indicator?.menu?.isOpen) {
+                            this._refresh();
+                            return GLib.SOURCE_CONTINUE;
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
+            } else if (this._pollId) {
+                GLib.source_remove(this._pollId);
+                this._pollId = null;
+            }
+        });
+
+        Main.panel.addToStatusArea('frostbyte', this._indicator);
+    }
+
+    _buildMenu() {
+        const menu = this._indicator.menu;
+        menu.removeAll();
+
+        this._toggleItem = new PopupMenu.PopupSwitchMenuItem('FrostByte', true);
+        this._toggleItem.connect('toggled', (_item, state) => {
+            const cmd = state ? 'start' : 'stop';
+            try {
+                GLib.spawn_command_line_async(
+                    `systemctl --user ${cmd} frostbyte.service`);
+            } catch (_) {}
+        });
+        menu.addMenuItem(this._toggleItem);
+
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        this._frozenSection = new PopupMenu.PopupMenuSection();
+        menu.addMenuItem(this._frozenSection);
+
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._footerItem = new PopupMenu.PopupMenuItem('', {reactive: false});
+        this._footerItem.label.style = 'font-style: italic; color: #999;';
+        menu.addMenuItem(this._footerItem);
+    }
+
+    _refresh() {
+        try {
+            const [ok, contents] = GLib.file_get_contents(STATUS_FILE);
+            const data = JSON.parse(new TextDecoder().decode(contents));
+
+            this._toggleItem.setToggleState(data.active !== false);
+
+            this._frozenSection.removeAll();
+
+            if (data.frozen && data.frozen.length > 0) {
+                for (const proc of data.frozen) {
+                    const item = new PopupMenu.PopupMenuItem(
+                        `\u2744  ${proc.name}   ${proc.rss_mb} MB`);
+                    item.connect('activate', () => {
+                        this._requestThaw(proc.pid);
+                    });
+                    this._frozenSection.addMenuItem(item);
+                }
+                this._footerItem.label.text =
+                    `Saved: ~${data.saved_mb} MB`;
+            } else {
+                const empty = new PopupMenu.PopupMenuItem(
+                    'No frozen processes', {reactive: false});
+                empty.label.style = 'font-style: italic; color: #888;';
+                this._frozenSection.addMenuItem(empty);
+                this._footerItem.label.text = '';
+            }
+
+            const count = data.frozen ? data.frozen.length : 0;
+            this._icon.text = count > 0 ? `\u2744${count}` : '\u2744';
+
+        } catch (_) {
+            this._frozenSection.removeAll();
+            const offline = new PopupMenu.PopupMenuItem(
+                'Daemon not running', {reactive: false});
+            offline.label.style = 'font-style: italic; color: #c62828;';
+            this._frozenSection.addMenuItem(offline);
+            this._toggleItem.setToggleState(false);
+            this._icon.text = '\u2744';
+            this._footerItem.label.text = '';
+        }
+    }
+
+    _requestThaw(pid) {
+        try {
+            GLib.file_set_contents(THAW_FILE, `${pid}\n`);
+        } catch (_) {}
+    }
+
+    _windowPidAtPos(x, y) {
+        const actors = global.get_window_actors();
+        for (let i = actors.length - 1; i >= 0; i--) {
+            const win = actors[i].meta_window;
+            if (!win) continue;
+            if (win.get_window_type() !== Meta.WindowType.NORMAL) continue;
+            const rect = win.get_frame_rect();
+            if (x >= rect.x && x < rect.x + rect.width &&
+                y >= rect.y && y < rect.y + rect.height)
+                return win.get_pid();
+        }
+        return -1;
+    }
+
+    _writeFocus(pid) {
+        if (pid > 0) {
+            try {
+                GLib.file_set_contents(FOCUS_FILE, `${pid}\n`);
+            } catch (_) {}
+        }
+    }
+
+    disable() {
+        if (this._focusId) {
+            global.display.disconnect(this._focusId);
+            this._focusId = null;
+        }
+        if (this._captureId) {
+            global.stage.disconnect(this._captureId);
+            this._captureId = null;
+        }
+        if (this._pollId) {
+            GLib.source_remove(this._pollId);
+            this._pollId = null;
+        }
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
+        try { GLib.unlink(FOCUS_FILE); } catch (_) {}
+    }
+}
+'''
+
+_SERVICE_UNIT = """\
+[Unit]
+Description=FrostByte — auto-suspend inactive apps
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/frostbyte run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
 
 DEFAULT_CONFIG = {
     "freeze_after_minutes": 10,
@@ -38,25 +270,42 @@ DEFAULT_CONFIG = {
     "scan_interval": 30,
     "max_freeze_hours": 4,
     "whitelist": [
+        # desktop shell & compositor
         "gnome-shell",
         "gnome-session",
         "gsd-",
         "mutter",
         "Xwayland",
+        "kwin",
+        "plasmashell",
+        "sway",
+        "hyprland",
+        # input methods (keyboard switching breaks without these)
+        "ibus",
+        "fcitx",
+        "xdg-desktop-portal",
+        # audio
         "pulseaudio",
         "pipewire",
         "wireplumber",
+        # terminals
         "tilix",
         "gnome-terminal",
         "kitty",
         "alacritty",
         "wezterm",
+        "foot",
+        # shells
         "bash",
         "zsh",
         "fish",
+        # self
         "frostbyte",
+        # containers
         "docker",
         "containerd",
+        "podman",
+        # system
         "systemd",
         "dbus-daemon",
         "dbus-broker",
@@ -64,6 +313,7 @@ DEFAULT_CONFIG = {
         "sshd",
         "gpg-agent",
         "gnome-keyring",
+        "polkit",
     ],
 }
 
@@ -110,9 +360,19 @@ class FrostByteDaemon:
 
     def _load_config(self) -> dict:
         cfg = DEFAULT_CONFIG.copy()
+        cfg["whitelist"] = list(DEFAULT_CONFIG["whitelist"])
         if CONFIG_FILE.exists():
             try:
-                cfg.update(json.loads(CONFIG_FILE.read_text()))
+                user = json.loads(CONFIG_FILE.read_text())
+                user_wl = user.pop("whitelist", None)
+                cfg.update(user)
+                if user_wl is not None:
+                    # merge: default whitelist + user additions
+                    seen = {e.lower() for e in cfg["whitelist"]}
+                    for entry in user_wl:
+                        if entry.lower() not in seen:
+                            cfg["whitelist"].append(entry)
+                            seen.add(entry.lower())
             except Exception as e:
                 logging.warning(f"Bad config {CONFIG_FILE}: {e} — using defaults")
         return cfg
@@ -360,6 +620,10 @@ class FrostByteDaemon:
                     stopped = self._find_stopped_ancestor(pid)
                     if stopped:
                         self.thaw_pid(stopped)
+                    # also thaw stopped descendants (e.g. TUI apps inside a terminal)
+                    for child in self._children(pid):
+                        if self._is_stopped(child):
+                            self.thaw_pid(child)
         except (ValueError, IOError):
             pass
 
@@ -459,12 +723,43 @@ class FrostByteDaemon:
                 print(f"FrostByte already running (PID {old_pid})", file=sys.stderr)
                 sys.exit(1)
 
+    # ── GNOME Shell extension ────────────────────────────────
+
+    @staticmethod
+    def _ensure_extension():
+        """Enable the companion GNOME Shell extension if installed but inactive."""
+        try:
+            r = subprocess.run(
+                ["gnome-extensions", "info", EXTENSION_UUID],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                logging.warning(
+                    f"GNOME Shell extension {EXTENSION_UUID} not installed — "
+                    f"focus-based thaw will not work"
+                )
+                return
+            # "State: ENABLED" or locale-dependent "Включено: Да"
+            enabled = ("ENABLED" in r.stdout or "Включено: Да" in r.stdout
+                       or "Enabled: Yes" in r.stdout)
+            if not enabled:
+                subprocess.run(
+                    ["gnome-extensions", "enable", EXTENSION_UUID],
+                    capture_output=True, timeout=5,
+                )
+                logging.info(f"Enabled GNOME Shell extension {EXTENSION_UUID}")
+        except FileNotFoundError:
+            logging.warning("gnome-extensions CLI not found — cannot verify extension")
+        except Exception as e:
+            logging.warning(f"Extension check failed: {e}")
+
     # ── main loop ───────────────────────────────────────────
 
     def run(self):
         self._check_already_running()
         self._save_default_config()
         self._setup_logging()
+        self._ensure_extension()
         signal.signal(signal.SIGTERM, self._shutdown)
         signal.signal(signal.SIGINT, self._shutdown)
 
@@ -1360,10 +1655,186 @@ def cmd_monitor(args):
     curses.wrapper(_monitor_tui)
 
 
+def _detect_shell_versions():
+    """Detect installed GNOME Shell version for metadata.json."""
+    try:
+        r = subprocess.run(
+            ["gnome-shell", "--version"], capture_output=True, text=True, timeout=5,
+        )
+        # "GNOME Shell 46.0" → 46
+        major = int(r.stdout.strip().split()[-1].split(".")[0])
+        return [str(v) for v in range(max(45, major - 1), major + 2)]
+    except Exception:
+        return ["45", "46", "47", "48"]
+
+
+def _ok(msg):
+    print(f"  \033[32m✓\033[0m {msg}")
+
+def _dim(msg):
+    print(f"  \033[90m{msg}\033[0m")
+
+def _warn(msg):
+    print(f"  \033[33m!\033[0m {msg}")
+
+
+def cmd_install(args):
+    """Install FrostByte: binary, GNOME extension, systemd service."""
+    print(f"\n  \033[36m❄\033[0m \033[1mFrostByte\033[0m installer\n")
+
+    # 1. Copy binary
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    dest = BIN_DIR / "frostbyte"
+
+    if _SELF_PATH and dest.resolve() == _SELF_PATH:
+        _dim(f"binary already at {dest}")
+    elif _SELF_SOURCE:
+        dest.write_bytes(_SELF_SOURCE)
+        dest.chmod(0o755)
+        _ok(f"daemon    → {dest}")
+    else:
+        sys.exit(
+            "\033[31mError:\033[0m cannot locate script source (running from pipe?).\n"
+            "Download the file first, then install:\n"
+            "  curl -fsSL https://github.com/VladislavTsytrikov/frostbyte/raw/main/frostbyte -o /tmp/frostbyte\n"
+            "  python3 /tmp/frostbyte install"
+        )
+
+    # 2. GNOME Shell extension
+    EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
+    (EXTENSION_DIR / "extension.js").write_text(_EXTENSION_JS.lstrip("\n"))
+
+    versions = _detect_shell_versions()
+    metadata = {
+        "uuid": EXTENSION_UUID,
+        "name": "FrostByte Focus Tracker",
+        "description": "Reports focused window PID to the FrostByte daemon for auto-thaw",
+        "shell-version": versions,
+        "version": 1,
+    }
+    (EXTENSION_DIR / "metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n"
+    )
+    _ok(f"extension → {EXTENSION_UUID} (GNOME Shell {', '.join(versions)})")
+
+    # 3. Systemd service
+    SERVICE_DIR.mkdir(parents=True, exist_ok=True)
+    (SERVICE_DIR / "frostbyte.service").write_text(_SERVICE_UNIT)
+    subprocess.run(["systemctl", "--user", "daemon-reload"],
+                   capture_output=True, timeout=10)
+    _ok("service   → frostbyte.service")
+
+    # 4. Default config
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+        _ok(f"config    → {CONFIG_FILE}")
+    else:
+        _dim(f"config already exists → {CONFIG_FILE}")
+
+    # 5. Enable extension
+    try:
+        subprocess.run(
+            ["gnome-extensions", "enable", EXTENSION_UUID],
+            capture_output=True, timeout=5,
+        )
+        _ok("extension enabled")
+    except FileNotFoundError:
+        _warn("gnome-extensions not found — enable the extension manually")
+
+    # 6. Enable & start service
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", "frostbyte.service"],
+        capture_output=True, timeout=10,
+    )
+    _ok("daemon started")
+
+    print(f"\n  \033[32m\033[1mDone!\033[0m FrostByte is running. ❄")
+    _dim("run \033[0mfrostbyte monitor\033[90m to open the TUI\n")
+
+
+def cmd_uninstall(args):
+    """Remove FrostByte: stop service, remove extension, binary, service."""
+    import shutil
+
+    print(f"\n  \033[36m❄\033[0m \033[1mFrostByte\033[0m uninstaller\n")
+
+    # 1. Stop & disable service
+    subprocess.run(
+        ["systemctl", "--user", "disable", "--now", "frostbyte.service"],
+        capture_output=True, timeout=10,
+    )
+    _ok("stopped frostbyte.service")
+
+    # 2. Thaw everything before removing
+    d = FrostByteDaemon()
+    d.scan()
+    count = 0
+    for pid, p in d.procs.items():
+        try:
+            raw = _read_file(f"/proc/{pid}/stat")
+            rp = raw.rindex(")")
+            if raw[rp + 2:].split()[0] == "T":
+                os.kill(pid, signal.SIGCONT)
+                count += 1
+        except Exception:
+            continue
+    if count:
+        _ok(f"thawed {count} frozen processes")
+
+    # 3. Disable & remove extension
+    try:
+        subprocess.run(
+            ["gnome-extensions", "disable", EXTENSION_UUID],
+            capture_output=True, timeout=5,
+        )
+    except FileNotFoundError:
+        pass
+    if EXTENSION_DIR.exists():
+        shutil.rmtree(EXTENSION_DIR)
+        _ok(f"removed extension {EXTENSION_UUID}")
+
+    # 4. Remove service file
+    svc = SERVICE_DIR / "frostbyte.service"
+    if svc.exists():
+        svc.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"],
+                       capture_output=True, timeout=10)
+        _ok("removed frostbyte.service")
+
+    # 5. Remove binary (but not if we're running from it — just warn)
+    dest = BIN_DIR / "frostbyte"
+    if dest.exists():
+        if _SELF_PATH and dest.resolve() == _SELF_PATH:
+            _warn(f"binary at {dest} — remove manually: rm {dest}")
+        else:
+            dest.unlink()
+            _ok(f"removed {dest}")
+
+    # 6. Clean tmp files
+    for f in [FOCUS_FILE, STATUS_FILE, THAW_FILE, PID_FILE]:
+        f.unlink(missing_ok=True)
+
+    if args.purge and CONFIG_DIR.exists():
+        shutil.rmtree(CONFIG_DIR)
+        _ok("purged config directory")
+    elif CONFIG_DIR.exists():
+        _dim(f"config kept at {CONFIG_DIR} (use --purge to remove)")
+
+    print(f"\n  \033[32m\033[1mDone!\033[0m FrostByte removed.\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="frostbyte",
         description="Auto-suspend inactive apps to save RAM",
+        epilog=(
+            "Quick install:\n"
+            "  curl -fsSL https://github.com/VladislavTsytrikov/frostbyte/raw/main/frostbyte"
+            " -o /tmp/frostbyte\n"
+            "  python3 /tmp/frostbyte install\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="cmd")
 
@@ -1385,6 +1856,16 @@ def main():
 
     p_monitor = sub.add_parser("monitor", help="Live TUI dashboard")
     p_monitor.set_defaults(func=cmd_monitor)
+
+    p_install = sub.add_parser(
+        "install", help="Install everything: binary, extension, service")
+    p_install.set_defaults(func=cmd_install)
+
+    p_uninstall = sub.add_parser(
+        "uninstall", help="Remove FrostByte completely")
+    p_uninstall.add_argument(
+        "--purge", action="store_true", help="Also remove config directory")
+    p_uninstall.set_defaults(func=cmd_uninstall)
 
     args = parser.parse_args()
     if not args.cmd:
