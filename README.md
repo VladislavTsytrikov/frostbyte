@@ -4,24 +4,29 @@
   <br><br>
   <strong>Your idle apps are wasting gigabytes of RAM. FrostByte fixes that.</strong>
   <br>
-  <sub>Auto-suspend inactive GUI apps on GNOME/Wayland &mdash; thaw instantly on focus</sub>
+  <sub>Reclaim your RAM from idle apps. Automatically.</sub>
   <br><br>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <img src="https://img.shields.io/badge/python-3.6+-3776ab.svg" alt="Python">
-  <img src="https://img.shields.io/badge/GNOME_Shell-45_|_46_|_47-4a86cf.svg" alt="GNOME Shell">
-  <img src="https://img.shields.io/badge/Wayland-native-green.svg" alt="Wayland">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero deps">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.6+-3776ab.svg?style=for-the-badge" alt="Python">
+  <img src="https://img.shields.io/badge/GNOME_Shell-45_|_46_|_47-4a86cf.svg?style=for-the-badge" alt="GNOME Shell">
+  <img src="https://img.shields.io/badge/Wayland-native-green.svg?style=for-the-badge" alt="Wayland">
 </p>
 
 ---
 
 <p align="center">
-  <img src="assets/demo.gif" alt="FrostByte demo" width="700">
+  <img src="assets/demo.gif" alt="FrostByte demo" width="800">
 </p>
 
-You open Firefox, Slack, VS Code, Telegram, Spotify... then forget about half of them. They sit there eating **gigabytes** of RAM while doing absolutely nothing.
+### 🧠 Stop the Memory Leak (Manually and Automatically)
 
-**FrostByte** watches your apps via `/proc`. When one has been idle long enough and is hogging memory, it sends `SIGSTOP` — the process freezes in place, and the OS can reclaim its pages. The moment you click that window, the companion GNOME Shell extension fires and FrostByte instantly thaws it with `SIGCONT`. You never notice.
+Your browser, Slack, VS Code, and Spotify are eating **gigabytes** of RAM right now, even if you haven't touched them in hours. Linux is great at managing memory, but it can't swap out memory that apps are actively "using" (just sitting there).
+
+**FrostByte** is a lightweight daemon that puts inactive GUI applications into "Cold Storage":
+1. **Freeze** &mdash; Idle apps (no CPU activity) above a RAM threshold get a `SIGSTOP`. The OS instantly reclaims their physical memory pages.
+2. **Thaw** &mdash; The moment you focus or click a frozen window, the GNOME extension wakes it up with `SIGCONT`. It's **instant** and **transparent**.
+
+> **Result:** Your laptop stays cool, your swap stays empty, and your system stays fast. ❄️
 
 ## How it works
 
@@ -128,6 +133,7 @@ Config file: `~/.config/frostbyte/config.json` (created on first run)
   "min_rss_mb": 100,
   "poll_interval": 1,
   "scan_interval": 30,
+  "max_freeze_hours": 4,
   "whitelist": ["gnome-shell", "pipewire", "kitty", "..."]
 }
 ```
@@ -138,6 +144,7 @@ Config file: `~/.config/frostbyte/config.json` (created on first run)
 | `min_rss_mb` | `100` | Minimum RSS (MB) — small processes are never frozen |
 | `poll_interval` | `1` | Seconds between focus checks (thaw latency) |
 | `scan_interval` | `30` | Seconds between full `/proc` scans |
+| `max_freeze_hours` | `4` | Auto-thaw after this many hours frozen (0 = disabled) — prevents stale TCP connections and app crashes |
 | `whitelist` | 24 patterns | Substring match on process name/cmdline — add your music player, IDE, etc. |
 
 Logs: `~/.config/frostbyte/frostbyte.log`

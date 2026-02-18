@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "min_rss_mb": 100,
     "poll_interval": 1,
     "scan_interval": 30,
+    "max_freeze_hours": 4,
     "whitelist": [
         "gnome-shell",
         "gnome-session",
@@ -99,6 +100,7 @@ class FrostByteDaemon:
         self.uid = os.getuid()
         self.procs: Dict[int, Proc] = {}
         self.frozen: Set[int] = set()
+        self._frozen_at: Dict[int, float] = {}
         self._ppid_map: Dict[int, List[int]] = {}
         self.config = self._load_config()
         if config_overrides:
@@ -229,6 +231,7 @@ class FrostByteDaemon:
         for pid in set(self.procs) - seen:
             del self.procs[pid]
             self.frozen.discard(pid)
+            self._frozen_at.pop(pid, None)
 
     # ── freeze / thaw ──────────────────────────────────────
 
@@ -247,6 +250,7 @@ class FrostByteDaemon:
             try:
                 os.kill(p, signal.SIGSTOP)
                 self.frozen.add(p)
+                self._frozen_at.setdefault(p, time.time())
                 if p in self.procs:
                     self.procs[p].frozen = True
                 count += 1
@@ -282,17 +286,24 @@ class FrostByteDaemon:
         except Exception:
             pass
 
+        # children first: leaves thaw before roots, delay before root
+        sorted_pids = sorted(to_thaw, key=lambda p: len(self._children(p)))
         thawed = []
-        for p in to_thaw:
+        for i, p in enumerate(sorted_pids):
+            # pause before the root process so children are schedulable
+            if i == len(sorted_pids) - 1 and len(thawed) > 0:
+                time.sleep(0.05)
             try:
                 os.kill(p, signal.SIGCONT)
                 self.frozen.discard(p)
+                self._frozen_at.pop(p, None)
                 if p in self.procs:
                     self.procs[p].frozen = False
                     self.procs[p].last_active = time.time()
                 thawed.append(p)
             except (ProcessLookupError, PermissionError):
                 self.frozen.discard(p)
+                self._frozen_at.pop(p, None)
 
         if thawed:
             name = self.procs[pid].name if pid in self.procs else "?"
@@ -342,6 +353,24 @@ class FrostByteDaemon:
                         self.thaw_pid(stopped)
         except (ValueError, IOError):
             pass
+
+    # ── auto-thaw (max freeze duration) ────────────────────
+
+    def _check_auto_thaw(self):
+        max_h = self.config.get("max_freeze_hours", 0)
+        if max_h <= 0:
+            return
+        max_secs = max_h * 3600
+        now = time.time()
+        for pid in list(self.frozen):
+            frozen_since = self._frozen_at.get(pid, now)
+            if now - frozen_since >= max_secs:
+                name = self.procs[pid].name if pid in self.procs else "?"
+                logging.info(
+                    f"AUTO-THAW {name} pid={pid} "
+                    f"(frozen {(now - frozen_since) / 3600:.1f}h, limit={max_h}h)"
+                )
+                self.thaw_pid(pid)
 
     # ── freeze candidates ───────────────────────────────────
 
@@ -450,6 +479,7 @@ class FrostByteDaemon:
                 self._tick = 0
                 self.scan()
                 self._check_freeze()
+                self._check_auto_thaw()
                 self._write_status()
 
             time.sleep(cfg["poll_interval"])
