@@ -65,6 +65,11 @@ DEFAULT_CONFIG = {
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
 
 
+def _read_file(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
 @dataclass
 class Proc:
     pid: int
@@ -137,7 +142,7 @@ class FreezerDaemon:
                 continue
             pid = int(entry)
             try:
-                raw = open(f"/proc/{pid}/stat").read()
+                raw = _read_file(f"/proc/{pid}/stat")
                 lp = raw.index("(")
                 rp = raw.rindex(")")
                 comm = raw[lp + 1 : rp]
@@ -145,7 +150,7 @@ class FreezerDaemon:
                 # f[0]=state f[1]=ppid f[2]=pgrp ... f[11]=utime f[12]=stime f[21]=rss
                 state = f[0]
 
-                status = open(f"/proc/{pid}/status").read()
+                status = _read_file(f"/proc/{pid}/status")
                 if f"Uid:\t{self.uid}" not in status:
                     continue
 
@@ -154,7 +159,7 @@ class FreezerDaemon:
 
                 try:
                     cmdline = (
-                        open(f"/proc/{pid}/cmdline").read().replace("\0", " ").strip()
+                        _read_file(f"/proc/{pid}/cmdline").replace("\0", " ").strip()
                     )
                 except Exception:
                     cmdline = comm
@@ -198,7 +203,7 @@ class FreezerDaemon:
             if not entry.isdigit():
                 continue
             try:
-                raw = open(f"/proc/{entry}/stat").read()
+                raw = _read_file(f"/proc/{entry}/stat")
                 rp = raw.rindex(")")
                 ppid = int(raw[rp + 2 :].split()[1])
                 if ppid == pid:
@@ -240,7 +245,7 @@ class FreezerDaemon:
 
         # also check parent — maybe it's the frozen root
         try:
-            raw = open(f"/proc/{pid}/stat").read()
+            raw = _read_file(f"/proc/{pid}/stat")
             rp = raw.rindex(")")
             ppid = int(raw[rp + 2 :].split()[1])
             if self._is_stopped(ppid):
@@ -277,7 +282,7 @@ class FreezerDaemon:
     def _is_stopped(self, pid: int) -> bool:
         """Check if a process is in T (stopped) state."""
         try:
-            raw = open(f"/proc/{pid}/stat").read()
+            raw = _read_file(f"/proc/{pid}/stat")
             rp = raw.rindex(")")
             return raw[rp + 2 :].split()[0] == "T"
         except Exception:
@@ -292,7 +297,7 @@ class FreezerDaemon:
                 return current
             visited.add(current)
             try:
-                raw = open(f"/proc/{current}/stat").read()
+                raw = _read_file(f"/proc/{current}/stat")
                 rp = raw.rindex(")")
                 current = int(raw[rp + 2 :].split()[1])
             except Exception:
@@ -388,7 +393,7 @@ class FreezerDaemon:
         candidates = []
         for pid, p in sorted(self.procs.items(), key=lambda x: -x[1].rss_mb):
             try:
-                raw = open(f"/proc/{pid}/stat").read()
+                raw = _read_file(f"/proc/{pid}/stat")
                 rp = raw.rindex(")")
                 state = raw[rp + 2 :].split()[0]
             except Exception:
@@ -453,7 +458,7 @@ def cmd_thaw(args):
         found = False
         for pid, p in d.procs.items():
             try:
-                raw = open(f"/proc/{pid}/stat").read()
+                raw = _read_file(f"/proc/{pid}/stat")
                 rp = raw.rindex(")")
                 state = raw[rp + 2 :].split()[0]
             except Exception:
@@ -468,7 +473,7 @@ def cmd_thaw(args):
         count = 0
         for pid, p in d.procs.items():
             try:
-                raw = open(f"/proc/{pid}/stat").read()
+                raw = _read_file(f"/proc/{pid}/stat")
                 rp = raw.rindex(")")
                 state = raw[rp + 2 :].split()[0]
             except Exception:
