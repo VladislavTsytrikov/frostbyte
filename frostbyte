@@ -977,7 +977,11 @@ def _monitor_tui(stdscr):
     curses.use_default_colors()
     curses.curs_set(0)
     stdscr.timeout(33)  # ~30fps — instant hover response
-    curses.mousemask(curses.ALL_MOUSE_EVENTS)
+    _REPORT = getattr(curses, 'REPORT_MOUSE_POSITION', 0o10000000000)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS | _REPORT)
+    # Enable SGR extended mouse mode for motion tracking
+    sys.stdout.write("\033[?1003h\033[?1006h")
+    sys.stdout.flush()
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
 
     use_256 = curses.COLORS >= 256
@@ -1657,7 +1661,7 @@ def _monitor_tui(stdscr):
                 nb = b""
             curses.noecho()
             curses.curs_set(0)
-            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mousemask(curses.ALL_MOUSE_EVENTS | _REPORT)
             ni = nb.decode("utf-8", errors="replace").strip().lower()
             if ni:
                 if action == "freeze":
@@ -1719,7 +1723,12 @@ def _monitor_tui(stdscr):
 
 
 def cmd_monitor(args):
-    curses.wrapper(_monitor_tui)
+    try:
+        curses.wrapper(_monitor_tui)
+    finally:
+        # Disable mouse tracking escape codes
+        sys.stdout.write("\033[?1003l\033[?1006l")
+        sys.stdout.flush()
 
 
 def _detect_shell_versions():
