@@ -15,6 +15,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/demo.gif" alt="FrostByte demo" width="700">
+</p>
+
 You open Firefox, Slack, VS Code, Telegram, Spotify... then forget about half of them. They sit there eating **gigabytes** of RAM while doing absolutely nothing.
 
 **FrostByte** watches your apps via `/proc`. When one has been idle long enough and is hogging memory, it sends `SIGSTOP` — the process freezes in place, and the OS can reclaim its pages. The moment you click that window, the companion GNOME Shell extension fires and FrostByte instantly thaws it with `SIGCONT`. You never notice.
