@@ -272,34 +272,36 @@ class FrostByteDaemon:
             )
 
     def thaw_pid(self, pid: int):
-        # collect pid + all stopped children
+        # find the highest stopped ancestor to thaw the entire cluster
+        root = pid
+        visited = set()
+        current = pid
+        while current > 1 and current not in visited:
+            if self._is_stopped(current):
+                root = current
+            visited.add(current)
+            try:
+                raw = _read_file(f"/proc/{current}/stat")
+                rp = raw.rindex(")")
+                current = int(raw[rp + 2 :].split()[1])
+            except Exception:
+                break
+
+        # collect all stopped processes in this tree
         to_thaw: Set[int] = set()
-        if self._is_stopped(pid):
-            to_thaw.add(pid)
-        for p in self._children(pid):
+        if self._is_stopped(root):
+            to_thaw.add(root)
+        for p in self._children(root):
             if self._is_stopped(p):
                 to_thaw.add(p)
 
-        # also check parent — maybe it's the frozen root
-        try:
-            raw = _read_file(f"/proc/{pid}/stat")
-            rp = raw.rindex(")")
-            ppid = int(raw[rp + 2 :].split()[1])
-            if self._is_stopped(ppid):
-                to_thaw.add(ppid)
-                for p in self._children(ppid):
-                    if self._is_stopped(p):
-                        to_thaw.add(p)
-        except Exception:
-            pass
-
         # children first: leaves thaw before roots, delay before root
-        sorted_pids = sorted(to_thaw, key=lambda p: len(self._children(p)))
+        sorted_pids = sorted(list(to_thaw), key=lambda p: len(self._children(p)))
         thawed = []
         for i, p in enumerate(sorted_pids):
             # pause before the root process so children are schedulable
             if i == len(sorted_pids) - 1 and len(thawed) > 0:
-                time.sleep(0.05)
+                time.sleep(0.1) # increased slightly for stability
             try:
                 os.kill(p, signal.SIGCONT)
                 self.frozen.discard(p)
@@ -313,8 +315,8 @@ class FrostByteDaemon:
                 self._frozen_at.pop(p, None)
 
         if thawed:
-            name = self.procs[pid].name if pid in self.procs else "?"
-            logging.info(f"THAW   {name} pid={pid} ({len(thawed)} procs)")
+            name = self.procs[root].name if root in self.procs else "?"
+            logging.info(f"THAW   {name} pid={root} ({len(thawed)} procs)")
 
     def thaw_all(self):
         self.scan()
