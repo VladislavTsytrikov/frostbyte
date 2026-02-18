@@ -988,33 +988,36 @@ def _monitor_tui(stdscr):
     C_PROMPT = 13; C_HEAD = 14; C_DIM = 15; C_BAR_HOT = 16
     C_LOGO1 = 17; C_LOGO2 = 18; C_LOGO3 = 19; C_LOGO4 = 20; C_LOGO5 = 21
     C_BTN = 22; C_BTN_SKIP = 23; C_HOVER = 24; C_BTN_HOV = 25
+    C_ACCENT = 26; C_STAT_SEP = 27
 
     if use_256:
         curses.init_pair(C_LOGO, 81, -1)
         curses.init_pair(C_BORDER, 239, -1)
         curses.init_pair(C_FROZEN, 75, -1)
         curses.init_pair(C_CAND, 222, -1)
-        curses.init_pair(C_STAT_VAL, 114, -1)
+        curses.init_pair(C_STAT_VAL, 44, -1)
         curses.init_pair(C_STAT_LBL, 245, -1)
         curses.init_pair(C_BAR_FULL, 75, -1)
         curses.init_pair(C_BAR_EMPTY, 238, -1)
-        curses.init_pair(C_FOOTER, 252, 236)
-        curses.init_pair(C_FOOTER_KEY, 81, 236)
-        curses.init_pair(C_MSG, 222, -1)
-        curses.init_pair(C_SELECT, 255, 237)
+        curses.init_pair(C_FOOTER, 252, 233)
+        curses.init_pair(C_FOOTER_KEY, 81, 233)
+        curses.init_pair(C_MSG, 81, -1)
+        curses.init_pair(C_SELECT, 255, 24)
         curses.init_pair(C_PROMPT, 81, -1)
         curses.init_pair(C_HEAD, 252, -1)
         curses.init_pair(C_DIM, 242, -1)
         curses.init_pair(C_BAR_HOT, 203, -1)
         curses.init_pair(C_LOGO1, 159, -1)
-        curses.init_pair(C_LOGO2, 123, -1)
-        curses.init_pair(C_LOGO3, 87, -1)
-        curses.init_pair(C_LOGO4, 81, -1)
-        curses.init_pair(C_LOGO5, 75, -1)
-        curses.init_pair(C_BTN, 81, 238)
-        curses.init_pair(C_BTN_SKIP, 222, 238)
+        curses.init_pair(C_LOGO2, 117, -1)
+        curses.init_pair(C_LOGO3, 81, -1)
+        curses.init_pair(C_LOGO4, 44, -1)
+        curses.init_pair(C_LOGO5, 38, -1)
+        curses.init_pair(C_BTN, 81, 235)
+        curses.init_pair(C_BTN_SKIP, 222, 235)
         curses.init_pair(C_HOVER, 252, 235)
         curses.init_pair(C_BTN_HOV, 16, 81)
+        curses.init_pair(C_ACCENT, 99, -1)
+        curses.init_pair(C_STAT_SEP, 240, -1)
     else:
         curses.init_pair(C_LOGO, curses.COLOR_CYAN, -1)
         curses.init_pair(C_BORDER, curses.COLOR_WHITE, -1)
@@ -1037,6 +1040,8 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_BTN, curses.COLOR_CYAN, curses.COLOR_BLACK)
         curses.init_pair(C_BTN_SKIP, curses.COLOR_YELLOW, curses.COLOR_BLACK)
         curses.init_pair(C_HOVER, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        curses.init_pair(C_ACCENT, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(C_STAT_SEP, curses.COLOR_WHITE, -1)
         curses.init_pair(C_BTN_HOV, curses.COLOR_BLACK, curses.COLOR_CYAN)
 
     _logo_grad = [C_LOGO1, C_LOGO2, C_LOGO3, C_LOGO4, C_LOGO5]
@@ -1166,13 +1171,26 @@ def _monitor_tui(stdscr):
         logo_w = max(len(l) for l in logo)
         lx = max(1, (cols - logo_w) // 2)
 
-        if use_big:
-            # snowflake decoration line
+        def _snow_line(row):
             sx = max(1, (cols - len(_SNOW)) // 2)
-            _safe_addstr(stdscr, r, 0, "│", bdr)
-            _safe_addstr(stdscr, r, sx, _SNOW[:inner],
-                         curses.color_pair(C_DIM))
-            _safe_addstr(stdscr, r, cols - 1, "│", bdr)
+            _safe_addstr(stdscr, row, 0, "│", bdr)
+            for ci, ch in enumerate(_SNOW):
+                px = sx + ci
+                if px >= cols - 1:
+                    break
+                if ch == "❄":
+                    _safe_addstr(stdscr, row, px, ch,
+                                 curses.color_pair(C_LOGO))
+                elif ch == "✦":
+                    _safe_addstr(stdscr, row, px, ch,
+                                 curses.color_pair(C_ACCENT))
+                else:
+                    _safe_addstr(stdscr, row, px, ch,
+                                 curses.color_pair(C_DIM))
+            _safe_addstr(stdscr, row, cols - 1, "│", bdr)
+
+        if use_big:
+            _snow_line(r)
             r += 1
 
         _logo_shift = int(now_t * 0.15) % 5
@@ -1188,11 +1206,7 @@ def _monitor_tui(stdscr):
         r += len(logo)
 
         if use_big:
-            # snowflake decoration line
-            _safe_addstr(stdscr, r, 0, "│", bdr)
-            _safe_addstr(stdscr, r, sx, _SNOW[:inner],
-                         curses.color_pair(C_DIM))
-            _safe_addstr(stdscr, r, cols - 1, "│", bdr)
+            _snow_line(r)
             r += 1
             # tagline centered below logo
             tagline = S["tagline"]
@@ -1214,15 +1228,28 @@ def _monitor_tui(stdscr):
         # ── stats ribbon ──
         _safe_addstr(stdscr, r, 0, "│", bdr)
         cx = 3
-        for label, val in [(S["ram_saved"], _fmt_mb(saved_mb)),
-                           (S["frozen"], str(len(frozen_list))),
-                           (S["candidates"], str(len(candidates)))]:
+        stats = [(S["ram_saved"], _fmt_mb(saved_mb)),
+                 (S["frozen"], str(len(frozen_list))),
+                 (S["candidates"], str(len(candidates)))]
+        for si, (label, val) in enumerate(stats):
             if cx + len(label) + len(val) + 2 >= cols - 1:
                 break
             _safe_addstr(stdscr, r, cx, label, curses.color_pair(C_STAT_LBL))
             _safe_addstr(stdscr, r, cx + len(label) + 1, val,
                          curses.color_pair(C_STAT_VAL) | curses.A_BOLD)
-            cx += len(label) + len(val) + 5
+            cx += len(label) + len(val) + 3
+            if si < len(stats) - 1 and cx < cols - 2:
+                _safe_addstr(stdscr, r, cx, "│",
+                             curses.color_pair(C_STAT_SEP))
+                cx += 2
+        # daemon status indicator
+        ind = "❄ active"
+        ind_c = C_LOGO
+        if cx + 2 + len(ind) < cols - 1:
+            _safe_addstr(stdscr, r, cx, "│",
+                         curses.color_pair(C_STAT_SEP))
+            _safe_addstr(stdscr, r, cx + 2, ind,
+                         curses.color_pair(ind_c))
         _safe_addstr(stdscr, r, cols - 1, "│", bdr)
         r += 1
 
@@ -1238,21 +1265,22 @@ def _monitor_tui(stdscr):
         tx = t0x
         _tab_row = r
         for tlbl, tcol, ti in _tab_labels:
+            disp = ("● " + tlbl) if tab == ti else ("  " + tlbl)
             if ti == 0:
-                _tab0_end = tx + len(tlbl)
+                _tab0_end = tx + len(disp)
             elif ti == 1:
-                _tab1_start = tx; _tab1_end = tx + len(tlbl)
+                _tab1_start = tx; _tab1_end = tx + len(disp)
             else:
-                _tab2_start = tx; _tab2_end = tx + len(tlbl)
+                _tab2_start = tx; _tab2_end = tx + len(disp)
             if tab == ti:
-                _safe_addstr(stdscr, r, tx, tlbl,
+                _safe_addstr(stdscr, r, tx, disp,
                              curses.color_pair(tcol) | curses.A_BOLD | curses.A_UNDERLINE)
             elif hover_tab == ti:
-                _safe_addstr(stdscr, r, tx, tlbl,
+                _safe_addstr(stdscr, r, tx, disp,
                              curses.color_pair(tcol) | curses.A_BOLD)
             else:
-                _safe_addstr(stdscr, r, tx, tlbl, curses.color_pair(C_DIM))
-            tx += len(tlbl) + 3
+                _safe_addstr(stdscr, r, tx, disp, curses.color_pair(C_DIM))
+            tx += len(disp) + 3
         _safe_addstr(stdscr, r, cols - 1, "│", bdr)
         r += 1
 
@@ -1286,7 +1314,7 @@ def _monitor_tui(stdscr):
 
             visible = items[scroll:scroll + max_vis]
             max_rss = max((g.get("total_rss", 0) for g in items), default=1)
-            bar_w = max(8, inner - 6)  # full-width bar
+            bar_w = max(8, inner - 18)  # leave room for label after bar
 
             _block_y = []
             rr = content_top
@@ -1397,9 +1425,9 @@ def _monitor_tui(stdscr):
                         _safe_addstr(stdscr, rr, 1, " " * inner,
                                      curses.color_pair(C_HOVER))
                     bx = 4
-                    avail = min(bar_w, cols - bx - 1)
+                    avail = min(bar_w, cols - bx - 14)
                     if tab == 0:
-                        filled = int(group["total_rss"] / max_rss * bar_w) if max_rss > 0 else 0
+                        filled = int(group["total_rss"] / max_rss * avail) if max_rss > 0 else 0
                         filled = max(1, min(avail, filled))
                         _safe_addstr(stdscr, rr, bx, "█" * filled,
                                      curses.color_pair(C_BAR_FULL))
@@ -1407,12 +1435,13 @@ def _monitor_tui(stdscr):
                             _safe_addstr(stdscr, rr, bx + filled,
                                          "░" * (avail - filled),
                                          curses.color_pair(C_BAR_EMPTY))
+                        bar_lbl = _fmt_mb(group["total_rss"])
                     else:
                         pct = group["max_idle"] / threshold if threshold > 0 else 0
-                        filled = max(0, min(avail, int(pct * bar_w)))
+                        filled = max(0, min(avail, int(pct * avail)))
                         # split bar into color zones
-                        cut1 = int(0.5 * bar_w)
-                        cut2 = int(0.8 * bar_w)
+                        cut1 = int(0.5 * avail)
+                        cut2 = int(0.8 * avail)
                         seg_end = [min(filled, cut1),
                                    min(filled, cut2),
                                    filled]
@@ -1429,6 +1458,12 @@ def _monitor_tui(stdscr):
                             _safe_addstr(stdscr, rr, bx + filled,
                                          "░" * (avail - filled),
                                          curses.color_pair(C_BAR_EMPTY))
+                        bar_lbl = f"{group['max_idle']:.1f}m"
+                    # label after bar
+                    lbl_x = bx + avail + 2
+                    if lbl_x + len(bar_lbl) < cols - 1:
+                        _safe_addstr(stdscr, rr, lbl_x, bar_lbl,
+                                     curses.color_pair(C_STAT_LBL))
                     _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
                     rr += 1
 
