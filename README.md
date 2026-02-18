@@ -1,69 +1,108 @@
-# Freezer :snowflake:
+<p align="center">
+  <br>
+  <code>&nbsp;❄️ FrostByte &nbsp;</code>
+  <br><br>
+  <strong>Your idle apps are wasting gigabytes of RAM. FrostByte fixes that.</strong>
+  <br>
+  <sub>Auto-suspend inactive GUI apps on GNOME/Wayland &mdash; thaw instantly on focus</sub>
+  <br><br>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.6+-3776ab.svg" alt="Python">
+  <img src="https://img.shields.io/badge/GNOME_Shell-45_|_46_|_47-4a86cf.svg" alt="GNOME Shell">
+  <img src="https://img.shields.io/badge/Wayland-native-green.svg" alt="Wayland">
+  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero deps">
+</p>
 
-**Auto-suspend inactive GUI apps to save RAM**
+---
 
-Freezer is a lightweight daemon for GNOME/Wayland that monitors process CPU activity via `/proc` and automatically sends `SIGSTOP` to applications that have been idle for a configurable period. When you focus a frozen window, the companion GNOME Shell extension detects the event and the daemon instantly thaws the process with `SIGCONT` — no perceptible delay.
+You open Firefox, Slack, VS Code, Telegram, Spotify... then forget about half of them. They sit there eating **gigabytes** of RAM while doing absolutely nothing.
 
-## Feature comparison
-
-| Feature | Freezer | XSuspender | Nyrna | Hyprfreeze |
-|---|---|---|---|---|
-| Wayland support | Yes | No (X11 only) | No (X11 only) | Yes |
-| GNOME support | Yes | Yes | Yes | No (Hyprland) |
-| Auto-freeze (by inactivity) | Yes | On focus loss | No (manual) | No (manual) |
-| RAM-aware (RSS threshold) | Yes | No | No | No |
-| Instant thaw on focus | Yes | Yes | No | No |
-| Zero dependencies | Yes | libwnck, etc | Flutter/Dart | Hyprland tools |
-| Panel UI | Yes | No | Yes (GTK app) | No |
+**FrostByte** watches your apps via `/proc`. When one has been idle long enough and is hogging memory, it sends `SIGSTOP` — the process freezes in place, and the OS can reclaim its pages. The moment you click that window, the companion GNOME Shell extension fires and FrostByte instantly thaws it with `SIGCONT`. You never notice.
 
 ## How it works
 
-1. **Scan** — The daemon reads `/proc` every 30 seconds, tracking CPU ticks and RSS for each user-owned process.
-2. **Freeze** — When a process has been idle for the configured time (default 30 min) *and* exceeds the minimum RSS threshold (default 100 MB), the daemon sends `SIGSTOP` to the entire process tree.
-3. **Detect focus** — The GNOME Shell extension listens for window focus changes and click events (including clicks on frozen/unresponsive windows via the Clutter capture phase). On any such event it writes the window's PID to a temp file.
-4. **Thaw** — The daemon polls the focus file every 1 second. When it finds a PID, it walks up the process tree to locate the stopped ancestor and sends `SIGCONT` to the full tree, restoring the application instantly.
-5. **Panel indicator** — A GNOME Shell panel indicator shows currently frozen processes with one-click thaw buttons.
+```
+                    ┌─────────────────┐
+                    │  GNOME Shell    │
+                    │  Extension      │
+                    │                 │
+  click/focus ────▶ │ writes PID to   │
+  on window        │ /tmp/frostbyte  │
+                    └────────┬────────┘
+                             │
+                             ▼
+┌─────────────┐    ┌─────────────────┐    ┌──────────────┐
+│  /proc      │───▶│  FrostByte      │───▶│  SIGSTOP     │
+│  (CPU+RSS)  │    │  Daemon         │    │  (freeze)    │
+└─────────────┘    │                 │    └──────────────┘
+                    │  idle > 30min   │
+                    │  RSS > 100MB    │───▶  SIGCONT
+                    │  focus detected │    │  (thaw)
+                    └─────────────────┘    └──────────────┘
+```
 
-## Installation
+1. **Scan** &mdash; reads `/proc` every 30s, tracking CPU ticks and RSS per process
+2. **Freeze** &mdash; idle too long + above RAM threshold → `SIGSTOP` the entire process tree
+3. **Detect** &mdash; extension catches window focus *and* clicks on frozen windows (Clutter capture phase)
+4. **Thaw** &mdash; daemon picks up the PID, walks the process tree, sends `SIGCONT` — instant restore
+5. **Panel UI** &mdash; snowflake indicator shows frozen count, click to see list and thaw individually
+
+## Quick start
 
 ```bash
-git clone https://github.com/VladislavTsytrikov/freezer.git
-cd freezer
+git clone https://github.com/VladislavTsytrikov/frostbyte.git
+cd frostbyte
 ./install.sh
 ```
 
-Then enable the extension and start the service:
-
 ```bash
-gnome-extensions enable freezer@cryogen   # requires logout/login
-systemctl --user enable --now freezer.service
+# enable the extension (requires logout/login)
+gnome-extensions enable frostbyte@cryogen
+
+# start the daemon
+systemctl --user enable --now frostbyte.service
 ```
+
+That's it. FrostByte runs silently in the background.
 
 ## Usage
 
 ### CLI
 
+```bash
+frostbyte status           # show frozen & candidate processes
+frostbyte freeze <name>    # manually freeze a process
+frostbyte thaw [name]      # thaw one process or all
 ```
-freezer status           # show frozen & candidate processes
-freezer freeze <name>    # manually freeze a process by name
-freezer thaw [name]      # thaw a specific process (or all if no name given)
+
+### Panel indicator
+
+The snowflake icon in your top bar shows how many apps are frozen. Click it to:
+- See all frozen processes with their RAM usage
+- Thaw any process with one click
+- Toggle the daemon on/off
+
+### Example output
+
 ```
+$ frostbyte status
 
-### GNOME panel indicator
+  Config: freeze after 30min idle, min RSS 100MB
+  Whitelist: 24 patterns
 
-The panel icon shows the number of currently frozen apps. Click it to see the list and thaw individual processes.
+  FROZEN (2):
+     8412   842 MB  firefox
+    12034   310 MB  slack
 
-### Logs
-
-```
-~/.config/freezer/freezer.log
+  CANDIDATES (3):
+    15220   520 MB  idle  28.3m [##############------] code
+     9881   180 MB  idle  12.1m [########------------] telegram
+    11002   130 MB  idle   5.2m [###-----------------] nautilus
 ```
 
 ## Configuration
 
-Config file: `~/.config/freezer/config.json`
-
-A default config is created on first run:
+Config file: `~/.config/frostbyte/config.json` (created on first run)
 
 ```json
 {
@@ -71,45 +110,33 @@ A default config is created on first run:
   "min_rss_mb": 100,
   "poll_interval": 1,
   "scan_interval": 30,
-  "whitelist": [
-    "gnome-shell",
-    "gnome-session",
-    "gsd-",
-    "mutter",
-    "Xwayland",
-    "pulseaudio",
-    "pipewire",
-    "wireplumber",
-    "claude",
-    "tilix",
-    "gnome-terminal",
-    "kitty",
-    "alacritty",
-    "wezterm",
-    "bash",
-    "zsh",
-    "fish",
-    "freezer",
-    "docker",
-    "containerd",
-    "systemd",
-    "dbus-daemon",
-    "dbus-broker",
-    "ssh",
-    "sshd",
-    "gpg-agent",
-    "gnome-keyring"
-  ]
+  "whitelist": ["gnome-shell", "pipewire", "kitty", "..."]
 }
 ```
 
-| Field | Description |
-|---|---|
-| `freeze_after_minutes` | Minutes of zero CPU activity before a process is frozen |
-| `min_rss_mb` | Minimum resident memory (MB) — processes below this are never frozen |
-| `poll_interval` | Seconds between focus-file checks (thaw latency) |
-| `scan_interval` | Seconds between full `/proc` scans |
-| `whitelist` | Substring patterns matched against process name and cmdline. Any match prevents freezing. Add your terminal emulator, music player, or anything else that should never be suspended. |
+| Option | Default | Description |
+|---|---|---|
+| `freeze_after_minutes` | `30` | Minutes of zero CPU activity before freezing |
+| `min_rss_mb` | `100` | Minimum RSS (MB) — small processes are never frozen |
+| `poll_interval` | `1` | Seconds between focus checks (thaw latency) |
+| `scan_interval` | `30` | Seconds between full `/proc` scans |
+| `whitelist` | 24 patterns | Substring match on process name/cmdline — add your music player, IDE, etc. |
+
+Logs: `~/.config/frostbyte/frostbyte.log`
+
+## Alternatives
+
+There are other tools in this space, but none cover the same combination of features:
+
+| | FrostByte | [Nyrna](https://github.com/Merrit/nyrna) | [XSuspender](https://github.com/kernc/xsuspender) | [Hyprfreeze](https://github.com/Zerodya/hyprfreeze) |
+|---|:---:|:---:|:---:|:---:|
+| **Wayland** | :white_check_mark: | :x: | :x: | :white_check_mark: |
+| **GNOME** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: Hyprland only |
+| **Auto-freeze** | :white_check_mark: idle + RSS | :x: manual | :white_check_mark: on focus loss | :x: manual |
+| **RAM-aware** | :white_check_mark: | :x: | :x: | :x: |
+| **Instant thaw** | :white_check_mark: | :x: | :white_check_mark: | :x: |
+| **Panel UI** | :white_check_mark: | :white_check_mark: | :x: | :x: |
+| **Dependencies** | none | Flutter/Dart | libwnck | Hyprland tools |
 
 ## Requirements
 
@@ -118,7 +145,16 @@ A default config is created on first run:
 - Wayland session
 - systemd (user session)
 
-Tested on: Pop!_OS, Ubuntu 24.04+, Fedora 40+
+Tested on Pop!_OS, Ubuntu 24.04+, Fedora 40+
+
+## Uninstall
+
+```bash
+systemctl --user disable --now frostbyte.service
+rm ~/.local/bin/frostbyte
+rm -rf ~/.local/share/gnome-shell/extensions/frostbyte@cryogen
+rm ~/.config/systemd/user/frostbyte.service
+```
 
 ## License
 
