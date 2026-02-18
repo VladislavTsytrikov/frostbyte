@@ -600,7 +600,7 @@ def _monitor_tui(stdscr):
     """Live curses dashboard — modern TUI with visual blocks."""
     curses.use_default_colors()
     curses.curs_set(0)
-    stdscr.timeout(100)
+    stdscr.timeout(16)  # ~60fps
     _MOUSE_MOVE = getattr(curses, 'REPORT_MOUSE_POSITION', 0)
     curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
@@ -681,7 +681,8 @@ def _monitor_tui(stdscr):
     _btn_skip = None  # (y, x_start, x_end) for skip button
     hover = -1        # block under mouse (visual only, separate from sel)
     _frame = 0
-    _snow = []        # [(x, y_float, char, speed), ...]
+    _last_frame = 0.0
+    _snow = []        # [(x, y_float, char, speed_rows_per_sec), ...]
     _snow_chars = "·✧✦❄❆"
 
     def _framed(row, content="", attr=0):
@@ -707,6 +708,8 @@ def _monitor_tui(stdscr):
         _btn_act = None
         _btn_skip = None
         _frame += 1
+        dt = now_t - _last_frame if _last_frame else 0.016
+        _last_frame = now_t
 
         if rows < 14 or cols < 60:
             _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 10),
@@ -781,7 +784,7 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, r, cols - 1, "│", bdr)
             r += 1
 
-        _logo_shift = (_frame // 12) % 5
+        _logo_shift = int(now_t * 0.8) % 5
         for i, line in enumerate(logo):
             _safe_addstr(stdscr, r + i, 0, "│", bdr)
             if use_big:
@@ -965,7 +968,7 @@ def _monitor_tui(stdscr):
                         _safe_addstr(stdscr, rr, 1, " " * inner,
                                      curses.color_pair(C_HOVER))
                     bx = 4
-                    spark = (_frame // 3 + vi * 7) % (bar_w + 12)
+                    spark = int(now_t * 4 + vi * 2.7) % (bar_w + 12)
                     if tab == 0:
                         filled = int(group["total_rss"] / max_rss * bar_w) if max_rss > 0 else 0
                         filled = max(1, min(bar_w, filled))
@@ -1043,16 +1046,17 @@ def _monitor_tui(stdscr):
                          curses.color_pair(C_FOOTER))
             fx += len(d) + 2
 
-        # ── snowflake animation ──
+        # ── snowflake animation (time-based) ──
         for i in range(len(_snow)):
             sx, sy, sc, ss = _snow[i]
-            _snow[i] = (sx + random.uniform(-0.15, 0.15), sy + ss, sc, ss)
+            _snow[i] = (sx + random.uniform(-1.5, 1.5) * dt,
+                        sy + ss * dt, sc, ss)
         _snow = [(sx, sy, sc, ss) for sx, sy, sc, ss in _snow
                  if content_top <= int(sy) < content_bot]
-        if len(_snow) < 20 and random.random() < 0.2:
+        if len(_snow) < 30 and random.random() < 3.0 * dt:
             sx = random.randint(3, max(4, cols - 3))
             sc = random.choice(_snow_chars)
-            ss = random.uniform(0.04, 0.12)
+            ss = random.uniform(1.0, 4.0)  # rows per second
             _snow.append((float(sx), float(content_top), sc, ss))
         for sx, sy, sc, ss in _snow:
             iy, ix = int(sy), int(sx)
