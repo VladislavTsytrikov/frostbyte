@@ -51,7 +51,8 @@ Launch the dashboard with `frostbyte monitor`. It's not just a status tool; it's
 - **Enter**: Manually Freeze/Thaw a process.
 - **e**: Exclude a process from auto-freezing (adds to whitelist).
 - **f/t**: Quick-search freeze/thaw by name.
-- **Tab**: Switch between "Frozen" and "Candidates".
+- **Tab**: Switch between "Frozen", "Candidates", and "Exclusions".
+- **L**: Toggle UI language (English/Russian).
 
 ---
 
