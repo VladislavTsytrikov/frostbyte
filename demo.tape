@@ -14,4 +14,4 @@ Hide
 Type "python3 demo_mock.py"
 Enter
 Show
-Sleep 22s
+Sleep 21s
