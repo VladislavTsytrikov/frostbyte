@@ -18,7 +18,6 @@ import logging
 import argparse
 import curses
 import math
-import random
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
@@ -755,8 +754,6 @@ def _monitor_tui(stdscr):
     S = _STRINGS[lang]
     _frame = 0
     _last_frame = 0.0
-    _snow = []        # [(x_base, y_start, t_born, char, speed, phase), ...]
-    _snow_chars = "·✧✦❄❆"
 
     def _framed(row, content="", attr=0):
         w = cols - 2
@@ -1123,27 +1120,6 @@ def _monitor_tui(stdscr):
             _safe_addstr(stdscr, rows - 1, fx, f"{d}  ",
                          curses.color_pair(C_FOOTER))
             fx += len(d) + 2
-
-        # ── snowflake animation (lightweight, deterministic) ──
-        _snow = [(xb, ys, tb, sc, sp, ph)
-                 for xb, ys, tb, sc, sp, ph in _snow
-                 if ys + sp * (now_t - tb) < content_bot]
-        if len(_snow) < 6 and random.random() < 0.3:
-            _snow.append((
-                float(random.randint(3, max(4, cols - 3))),
-                float(content_top),
-                now_t,
-                random.choice(_snow_chars),
-                random.uniform(0.6, 1.5),
-                random.uniform(0, 6.283),
-            ))
-        for xb, ys, tb, sc, sp, ph in _snow:
-            elapsed = now_t - tb
-            ix = int(xb + 1.2 * math.sin(elapsed * 0.4 + ph))
-            iy = int(ys + sp * elapsed)
-            if 1 < ix < cols - 1 and content_top <= iy < content_bot:
-                _safe_addstr(stdscr, iy, ix, sc,
-                             curses.color_pair(C_DIM))
 
         stdscr.refresh()
 
