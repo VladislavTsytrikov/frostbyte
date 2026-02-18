@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""
+Freezer — auto-suspend inactive GUI apps to save RAM.
+For GNOME on Wayland (Pop!_OS, Ubuntu, Fedora).
+
+Monitors process CPU activity via /proc. After N minutes of inactivity,
+sends SIGSTOP to freeze the process (and children). When the user focuses
+the frozen window, the companion GNOME Shell extension writes the PID to
+/tmp/freezer-focus and the daemon instantly thaws it with SIGCONT.
+"""
+
+import os
+import sys
+import time
+import signal
+import json
+import logging
+import argparse
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Dict, Set, Optional, List
+
+FOCUS_FILE = Path("/tmp/freezer-focus")
+CONFIG_DIR = Path.home() / ".config" / "freezer"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+LOG_FILE = CONFIG_DIR / "freezer.log"
+PID_FILE = Path("/tmp/freezer.pid")
+
+DEFAULT_CONFIG = {
+    "freeze_after_minutes": 30,
+    "min_rss_mb": 100,
+    "poll_interval": 1,
+    "scan_interval": 30,
+    "whitelist": [
+        "gnome-shell",
+        "gnome-session",
+        "gsd-",
+        "mutter",
+        "Xwayland",
+        "pulseaudio",
+        "pipewire",
+        "wireplumber",
+        "claude",
+        "tilix",
+        "gnome-terminal",
+        "kitty",
+        "alacritty",
+        "wezterm",
+        "bash",
+        "zsh",
+        "fish",
+        "freezer",
+        "docker",
+        "containerd",
+        "systemd",
+        "dbus-daemon",
+        "dbus-broker",
+        "ssh",
+        "sshd",
+        "gpg-agent",
+        "gnome-keyring",
+    ],
+}
+
+PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+
+
+@dataclass
+class Proc:
+    pid: int
+    name: str
+    cmdline: str
+    cpu: int
+    rss_mb: float
+    last_active: float
+    frozen: bool = False
+
+
+class FreezerDaemon:
+    def __init__(self, config_overrides: Optional[dict] = None):
+        self.uid = os.getuid()
+        self.procs: Dict[int, Proc] = {}
+        self.frozen: Set[int] = set()
+        self.config = self._load_config()
+        if config_overrides:
+            self.config.update(config_overrides)
+        self._tick = 0
+
+    # ── config ──────────────────────────────────────────────
+
+    def _load_config(self) -> dict:
+        cfg = DEFAULT_CONFIG.copy()
+        if CONFIG_FILE.exists():
+            try:
+                cfg.update(json.loads(CONFIG_FILE.read_text()))
+            except Exception:
+                pass
+        return cfg
+
+    def _save_default_config(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if not CONFIG_FILE.exists():
+            CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+
+    # ── logging ─────────────────────────────────────────────
+
+    def _setup_logging(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(message)s",
+            datefmt="%H:%M:%S",
+            handlers=[
+                logging.FileHandler(LOG_FILE),
+                logging.StreamHandler(sys.stdout),
+            ],
+        )
+
+    # ── process scanning ────────────────────────────────────
+
+    def _is_whitelisted(self, name: str, cmdline: str) -> bool:
+        nl = name.lower()
+        cl = cmdline.lower()
+        for pat in self.config["whitelist"]:
+            p = pat.lower()
+            if p in nl or p in cl:
+                return True
+        return False
+
+    def scan(self):
+        """Read /proc and update internal process table."""
+        now = time.time()
+        seen: Set[int] = set()
+
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                raw = open(f"/proc/{pid}/stat").read()
+                lp = raw.index("(")
+                rp = raw.rindex(")")
+                comm = raw[lp + 1 : rp]
+                f = raw[rp + 2 :].split()
+                # f[0]=state f[1]=ppid f[2]=pgrp ... f[11]=utime f[12]=stime f[21]=rss
+                state = f[0]
+
+                status = open(f"/proc/{pid}/status").read()
+                if f"Uid:\t{self.uid}" not in status:
+                    continue
+
+                cpu = int(f[11]) + int(f[12])
+                rss = int(f[21]) * PAGE_SIZE / 1048576
+
+                try:
+                    cmdline = (
+                        open(f"/proc/{pid}/cmdline").read().replace("\0", " ").strip()
+                    )
+                except Exception:
+                    cmdline = comm
+
+                seen.add(pid)
+
+                if pid in self.procs:
+                    p = self.procs[pid]
+                    if cpu != p.cpu:
+                        p.last_active = now
+                    p.cpu = cpu
+                    p.rss_mb = rss
+                    # detect externally-resumed processes
+                    if p.frozen and state != "T":
+                        p.frozen = False
+                        self.frozen.discard(pid)
+                else:
+                    self.procs[pid] = Proc(
+                        pid=pid,
+                        name=comm,
+                        cmdline=cmdline,
+                        cpu=cpu,
+                        rss_mb=rss,
+                        last_active=now,
+                    )
+            except (FileNotFoundError, ProcessLookupError, ValueError,
+                    IndexError, PermissionError):
+                continue
+
+        # purge dead
+        for pid in set(self.procs) - seen:
+            del self.procs[pid]
+            self.frozen.discard(pid)
+
+    # ── freeze / thaw ──────────────────────────────────────
+
+    def _children(self, pid: int) -> List[int]:
+        """Return list of all descendant PIDs."""
+        kids = []
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                raw = open(f"/proc/{entry}/stat").read()
+                rp = raw.rindex(")")
+                ppid = int(raw[rp + 2 :].split()[1])
+                if ppid == pid:
+                    child = int(entry)
+                    kids.append(child)
+                    kids.extend(self._children(child))
+            except Exception:
+                continue
+        return kids
+
+    def freeze_pid(self, pid: int, reason: str = ""):
+        tree = [pid] + self._children(pid)
+        count = 0
+        for p in tree:
+            try:
+                os.kill(p, signal.SIGSTOP)
+                self.frozen.add(p)
+                if p in self.procs:
+                    self.procs[p].frozen = True
+                count += 1
+            except (ProcessLookupError, PermissionError):
+                pass
+        if count:
+            name = self.procs[pid].name if pid in self.procs else "?"
+            rss = self.procs[pid].rss_mb if pid in self.procs else 0
+            logging.info(
+                f"FROZE  {name} pid={pid} ({count} procs, {rss:.0f}MB)"
+                + (f" [{reason}]" if reason else "")
+            )
+
+    def thaw_pid(self, pid: int):
+        # collect pid + all stopped children
+        to_thaw: Set[int] = set()
+        if self._is_stopped(pid):
+            to_thaw.add(pid)
+        for p in self._children(pid):
+            if self._is_stopped(p):
+                to_thaw.add(p)
+
+        # also check parent — maybe it's the frozen root
+        try:
+            raw = open(f"/proc/{pid}/stat").read()
+            rp = raw.rindex(")")
+            ppid = int(raw[rp + 2 :].split()[1])
+            if self._is_stopped(ppid):
+                to_thaw.add(ppid)
+                for p in self._children(ppid):
+                    if self._is_stopped(p):
+                        to_thaw.add(p)
+        except Exception:
+            pass
+
+        thawed = []
+        for p in to_thaw:
+            try:
+                os.kill(p, signal.SIGCONT)
+                self.frozen.discard(p)
+                if p in self.procs:
+                    self.procs[p].frozen = False
+                    self.procs[p].last_active = time.time()
+                thawed.append(p)
+            except (ProcessLookupError, PermissionError):
+                self.frozen.discard(p)
+
+        if thawed:
+            name = self.procs[pid].name if pid in self.procs else "?"
+            logging.info(f"THAW   {name} pid={pid} ({len(thawed)} procs)")
+
+    def thaw_all(self):
+        self.scan()
+        for pid in list(self.frozen):
+            self.thaw_pid(pid)
+
+    # ── focus tracking ──────────────────────────────────────
+
+    def _is_stopped(self, pid: int) -> bool:
+        """Check if a process is in T (stopped) state."""
+        try:
+            raw = open(f"/proc/{pid}/stat").read()
+            rp = raw.rindex(")")
+            return raw[rp + 2 :].split()[0] == "T"
+        except Exception:
+            return False
+
+    def _find_stopped_ancestor(self, pid: int) -> Optional[int]:
+        """Walk up process tree to find a stopped (T) ancestor."""
+        visited = set()
+        current = pid
+        while current > 1 and current not in visited:
+            if self._is_stopped(current):
+                return current
+            visited.add(current)
+            try:
+                raw = open(f"/proc/{current}/stat").read()
+                rp = raw.rindex(")")
+                current = int(raw[rp + 2 :].split()[1])
+            except Exception:
+                break
+        return None
+
+    def _check_focus(self):
+        try:
+            if FOCUS_FILE.exists():
+                raw = FOCUS_FILE.read_text().strip()
+                if raw:
+                    pid = int(raw)
+                    # check if this pid or any ancestor is actually stopped
+                    stopped = self._find_stopped_ancestor(pid)
+                    if stopped:
+                        self.thaw_pid(stopped)
+        except (ValueError, IOError):
+            pass
+
+    # ── freeze candidates ───────────────────────────────────
+
+    def _check_freeze(self):
+        now = time.time()
+        threshold = self.config["freeze_after_minutes"] * 60
+        min_rss = self.config["min_rss_mb"]
+
+        for pid, p in list(self.procs.items()):
+            if p.frozen:
+                continue
+            if self._is_whitelisted(p.name, p.cmdline):
+                continue
+            if p.rss_mb < min_rss:
+                continue
+            idle = now - p.last_active
+            if idle >= threshold:
+                self.freeze_pid(
+                    pid,
+                    reason=f"idle {idle / 60:.0f}min, {p.rss_mb:.0f}MB",
+                )
+
+    # ── shutdown ────────────────────────────────────────────
+
+    def _shutdown(self, signum, frame):
+        logging.info("Shutting down — thawing all frozen processes")
+        for pid in list(self.frozen):
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except Exception:
+                pass
+        PID_FILE.unlink(missing_ok=True)
+        sys.exit(0)
+
+    # ── main loop ───────────────────────────────────────────
+
+    def run(self):
+        self._save_default_config()
+        self._setup_logging()
+        signal.signal(signal.SIGTERM, self._shutdown)
+        signal.signal(signal.SIGINT, self._shutdown)
+
+        PID_FILE.write_text(str(os.getpid()))
+
+        cfg = self.config
+        logging.info(
+            f"Freezer started — freeze after {cfg['freeze_after_minutes']}min, "
+            f"min RSS {cfg['min_rss_mb']}MB, "
+            f"poll {cfg['poll_interval']}s, scan {cfg['scan_interval']}s"
+        )
+
+        scans_per_tick = max(1, cfg["scan_interval"] // cfg["poll_interval"])
+
+        while True:
+            self._check_focus()
+
+            self._tick += 1
+            if self._tick >= scans_per_tick:
+                self._tick = 0
+                self.scan()
+                self._check_freeze()
+
+            time.sleep(cfg["poll_interval"])
+
+    # ── CLI helpers ─────────────────────────────────────────
+
+    def print_status(self):
+        self.scan()
+        now = time.time()
+        threshold = self.config["freeze_after_minutes"]
+        min_rss = self.config["min_rss_mb"]
+
+        # find frozen (T state) user processes
+        frozen_list = []
+        candidates = []
+        for pid, p in sorted(self.procs.items(), key=lambda x: -x[1].rss_mb):
+            try:
+                raw = open(f"/proc/{pid}/stat").read()
+                rp = raw.rindex(")")
+                state = raw[rp + 2 :].split()[0]
+            except Exception:
+                state = "?"
+
+            if state == "T":
+                frozen_list.append((pid, p))
+            elif (
+                not self._is_whitelisted(p.name, p.cmdline) and p.rss_mb >= min_rss
+            ):
+                idle = (now - p.last_active) / 60
+                candidates.append((pid, p, idle))
+
+        print(
+            f"\n  Config: freeze after {threshold}min idle, "
+            f"min RSS {min_rss}MB"
+        )
+        print(f"  Whitelist: {len(self.config['whitelist'])} patterns\n")
+
+        if frozen_list:
+            print(f"  FROZEN ({len(frozen_list)}):")
+            for pid, p in frozen_list:
+                print(f"    {pid:>7}  {p.rss_mb:>6.0f} MB  {p.name}")
+        else:
+            print("  FROZEN: none")
+
+        print()
+        if candidates:
+            print(f"  CANDIDATES ({len(candidates)}):")
+            for pid, p, idle in sorted(candidates, key=lambda x: -x[2])[:20]:
+                bar_len = min(20, int(idle / threshold * 20))
+                bar = "#" * bar_len + "-" * (20 - bar_len)
+                print(
+                    f"    {pid:>7}  {p.rss_mb:>6.0f} MB  "
+                    f"idle {idle:>5.1f}m [{bar}] {p.name}"
+                )
+        else:
+            print("  CANDIDATES: none (nothing above threshold)")
+        print()
+
+
+def cmd_run(args):
+    overrides = {}
+    if args.freeze_after is not None:
+        overrides["freeze_after_minutes"] = args.freeze_after
+    if args.min_rss is not None:
+        overrides["min_rss_mb"] = args.min_rss
+    daemon = FreezerDaemon(overrides)
+    daemon.run()
+
+
+def cmd_status(args):
+    FreezerDaemon().print_status()
+
+
+def cmd_thaw(args):
+    d = FreezerDaemon()
+    d.scan()
+
+    if args.name:
+        pattern = args.name.lower()
+        found = False
+        for pid, p in d.procs.items():
+            try:
+                raw = open(f"/proc/{pid}/stat").read()
+                rp = raw.rindex(")")
+                state = raw[rp + 2 :].split()[0]
+            except Exception:
+                continue
+            if state == "T" and pattern in p.name.lower():
+                os.kill(pid, signal.SIGCONT)
+                print(f"  Thawed {p.name} (PID {pid})")
+                found = True
+        if not found:
+            print(f"  No frozen process matching '{args.name}'")
+    else:
+        count = 0
+        for pid, p in d.procs.items():
+            try:
+                raw = open(f"/proc/{pid}/stat").read()
+                rp = raw.rindex(")")
+                state = raw[rp + 2 :].split()[0]
+            except Exception:
+                continue
+            if state == "T":
+                try:
+                    os.kill(pid, signal.SIGCONT)
+                    count += 1
+                except Exception:
+                    pass
+        print(f"  Thawed {count} processes")
+
+
+def cmd_freeze(args):
+    d = FreezerDaemon()
+    d.scan()
+    pattern = args.name.lower()
+    found = False
+    for pid, p in sorted(d.procs.items(), key=lambda x: -x[1].rss_mb):
+        if pattern in p.name.lower() and not d._is_whitelisted(p.name, p.cmdline):
+            d.freeze_pid(pid, reason="manual")
+            print(f"  Froze {p.name} (PID {pid}, {p.rss_mb:.0f}MB)")
+            found = True
+            break
+    if not found:
+        print(f"  No running process matching '{args.name}' (or it's whitelisted)")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="freezer",
+        description="Auto-suspend inactive apps to save RAM",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    p_run = sub.add_parser("run", help="Start the daemon (foreground)")
+    p_run.add_argument("--freeze-after", type=int, dest="freeze_after")
+    p_run.add_argument("--min-rss", type=int, dest="min_rss")
+    p_run.set_defaults(func=cmd_run)
+
+    p_status = sub.add_parser("status", help="Show frozen & candidate processes")
+    p_status.set_defaults(func=cmd_status)
+
+    p_thaw = sub.add_parser("thaw", help="Thaw frozen processes")
+    p_thaw.add_argument("name", nargs="?", help="Process name pattern (or all)")
+    p_thaw.set_defaults(func=cmd_thaw)
+
+    p_freeze = sub.add_parser("freeze", help="Manually freeze a process")
+    p_freeze.add_argument("name", help="Process name pattern")
+    p_freeze.set_defaults(func=cmd_freeze)
+
+    args = parser.parse_args()
+    if not args.cmd:
+        parser.print_help()
+        return
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

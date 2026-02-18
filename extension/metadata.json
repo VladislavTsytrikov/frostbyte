@@ -1,0 +1,7 @@
+{
+  "uuid": "freezer@cryogen",
+  "name": "Freezer Focus Tracker",
+  "description": "Reports focused window PID to the Freezer daemon for auto-thaw",
+  "shell-version": ["45", "46", "47"],
+  "version": 1
+}

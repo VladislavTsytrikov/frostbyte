@@ -1,0 +1,13 @@
+[Unit]
+Description=Freezer — auto-suspend inactive apps
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/freezer run
+ExecStop=%h/.local/bin/freezer thaw
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
