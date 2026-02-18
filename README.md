@@ -53,17 +53,24 @@ You open Firefox, Slack, VS Code, Telegram, Spotify... then forget about half of
 
 ## Quick start
 
+**One-liner install** (requires `curl`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main/install.sh | bash
+```
+
+Or clone and install locally:
+
 ```bash
 git clone https://github.com/VladislavTsytrikov/frostbyte.git
 cd frostbyte
 ./install.sh
 ```
 
-```bash
-# enable the extension (requires logout/login)
-gnome-extensions enable frostbyte@cryogen
+Then enable the extension and start the daemon:
 
-# start the daemon
+```bash
+gnome-extensions enable frostbyte@cryogen   # requires logout/login
 systemctl --user enable --now frostbyte.service
 ```
 
@@ -75,9 +82,16 @@ That's it. FrostByte runs silently in the background.
 
 ```bash
 frostbyte status           # show frozen & candidate processes
+frostbyte monitor          # live TUI dashboard
 frostbyte freeze <name>    # manually freeze a process
 frostbyte thaw [name]      # thaw one process or all
 ```
+
+### Live monitor
+
+`frostbyte monitor` opens a full-terminal dashboard that refreshes every 3 seconds.
+It shows RAM saved, all frozen processes, and freeze candidates with idle-time
+progress bars. Press `f` to freeze a process by name, `t` to thaw, `q` to quit.
 
 ### Panel indicator
 

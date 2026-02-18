@@ -1,10 +1,29 @@
 #!/bin/bash
 set -e
-DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if ! command -v python3 &>/dev/null; then
     echo "Error: python3 is required" >&2
     exit 1
+fi
+
+# Detect if running via curl|bash (no local script file)
+if ! [ -f "$0" ]; then
+    if ! command -v curl &>/dev/null; then
+        echo "Error: curl is required for remote install" >&2
+        exit 1
+    fi
+    FB_TMP="$(mktemp -d)"
+    trap 'rm -rf "$FB_TMP"' EXIT
+    RAWBASE="https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main"
+    echo "  Downloading FrostByte files..."
+    curl -fsSL "$RAWBASE/frostbyte"                -o "$FB_TMP/frostbyte"
+    curl -fsSL "$RAWBASE/frostbyte.service"        -o "$FB_TMP/frostbyte.service"
+    mkdir -p "$FB_TMP/extension"
+    curl -fsSL "$RAWBASE/extension/metadata.json"  -o "$FB_TMP/extension/metadata.json"
+    curl -fsSL "$RAWBASE/extension/extension.js"   -o "$FB_TMP/extension/extension.js"
+    DIR="$FB_TMP"
+else
+    DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
 
 echo "=== Installing FrostByte ==="
@@ -42,6 +61,7 @@ echo "  systemctl --user enable --now frostbyte.service"
 echo ""
 echo "Commands:"
 echo "  frostbyte status           — show frozen & candidate processes"
+echo "  frostbyte monitor          — live TUI dashboard"
 echo "  frostbyte thaw [name]      — thaw processes"
 echo "  frostbyte freeze <name>    — manually freeze a process"
 echo ""

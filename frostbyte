@@ -16,6 +16,7 @@ import signal
 import json
 import logging
 import argparse
+import curses
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional, List
@@ -70,6 +71,14 @@ PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
 def _read_file(path: str) -> str:
     with open(path) as f:
         return f.read()
+
+
+def _safe_addstr(win, y, x, text, attr=0):
+    """Write text to curses window, silently ignoring out-of-bounds errors."""
+    try:
+        win.addstr(y, x, text, attr)
+    except curses.error:
+        pass
 
 
 @dataclass
@@ -553,6 +562,194 @@ def cmd_freeze(args):
         print(f"  No running process matching '{args.name}' (or it's whitelisted)")
 
 
+def _monitor_tui(stdscr):
+    """Live curses dashboard."""
+    curses.use_default_colors()
+    curses.curs_set(0)
+    stdscr.timeout(3000)
+
+    # color pairs
+    C_HEAD, C_FROZEN, C_CAND, C_GOOD, C_SEC, C_PROMPT = 1, 2, 3, 4, 5, 6
+    curses.init_pair(C_HEAD, curses.COLOR_CYAN, -1)
+    curses.init_pair(C_FROZEN, curses.COLOR_BLUE, -1)
+    curses.init_pair(C_CAND, curses.COLOR_YELLOW, -1)
+    curses.init_pair(C_GOOD, curses.COLOR_GREEN, -1)
+    curses.init_pair(C_SEC, curses.COLOR_WHITE, -1)
+    curses.init_pair(C_PROMPT, curses.COLOR_RED, -1)
+
+    daemon = FrostByteDaemon()
+    message = ""
+
+    while True:
+        daemon.scan()
+        rows, cols = stdscr.getmaxyx()
+        stdscr.erase()
+
+        if rows < 10 or cols < 40:
+            _safe_addstr(stdscr, 0, 0, "Terminal too small (need 40x10)")
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key == ord("q"):
+                break
+            continue
+
+        # ── data ──
+        now = time.time()
+        threshold = daemon.config["freeze_after_minutes"]
+        min_rss = daemon.config["min_rss_mb"]
+
+        frozen_list = []
+        candidates = []
+        saved_mb = 0
+        for pid, p in sorted(daemon.procs.items(), key=lambda x: -x[1].rss_mb):
+            try:
+                raw = _read_file(f"/proc/{pid}/stat")
+                rp = raw.rindex(")")
+                state = raw[rp + 2:].split()[0]
+            except Exception:
+                state = "?"
+            if state == "T":
+                frozen_list.append((pid, p))
+                saved_mb += p.rss_mb
+            elif not daemon._is_whitelisted(p.name, p.cmdline) and p.rss_mb >= min_rss:
+                idle = (now - p.last_active) / 60
+                candidates.append((pid, p, idle))
+        candidates.sort(key=lambda x: -x[2])
+
+        # ── header ──
+        header = " ❄ FrostByte "
+        _safe_addstr(stdscr, 0, 0, header.center(cols),
+                     curses.color_pair(C_HEAD) | curses.A_REVERSE | curses.A_BOLD)
+
+        # ── stats ──
+        stats = (f"  RAM saved: {saved_mb:.0f} MB  |  "
+                 f"Frozen: {len(frozen_list)}  |  "
+                 f"Candidates: {len(candidates)}  |  "
+                 f"Threshold: {threshold}min / {min_rss}MB")
+        _safe_addstr(stdscr, 2, 0, stats[:cols], curses.color_pair(C_GOOD))
+
+        # ── frozen section ──
+        row = 4
+        sec = f"┌─ FROZEN ({len(frozen_list)}) "
+        sec += "─" * max(0, cols - len(sec) - 1) + "┐"
+        _safe_addstr(stdscr, row, 0, sec[:cols],
+                     curses.color_pair(C_SEC) | curses.A_BOLD)
+        row += 1
+
+        if frozen_list:
+            for pid, p in frozen_list:
+                if row >= rows - 4:
+                    break
+                line = f"│  {pid:>7}  {p.rss_mb:>6.0f} MB  {p.name}"
+                line = line[:cols - 1].ljust(cols - 1) + "│"
+                _safe_addstr(stdscr, row, 0, line[:cols], curses.color_pair(C_FROZEN))
+                row += 1
+        else:
+            line = "│  (none)"
+            line = line[:cols - 1].ljust(cols - 1) + "│"
+            _safe_addstr(stdscr, row, 0, line[:cols], curses.color_pair(C_FROZEN))
+            row += 1
+
+        _safe_addstr(stdscr, row, 0, ("└" + "─" * (cols - 2) + "┘")[:cols],
+                     curses.color_pair(C_SEC))
+        row += 2
+
+        # ── candidates section ──
+        if row < rows - 4:
+            sec = f"┌─ CANDIDATES ({len(candidates)}) "
+            sec += "─" * max(0, cols - len(sec) - 1) + "┐"
+            _safe_addstr(stdscr, row, 0, sec[:cols],
+                         curses.color_pair(C_SEC) | curses.A_BOLD)
+            row += 1
+
+            bar_w = 15
+            if candidates:
+                for pid, p, idle in candidates[:20]:
+                    if row >= rows - 4:
+                        break
+                    filled = min(bar_w, int(idle / threshold * bar_w))
+                    bar = "█" * filled + "░" * (bar_w - filled)
+                    line = f"│  {pid:>7}  {p.rss_mb:>6.0f} MB  idle {idle:>5.1f}m [{bar}] {p.name}"
+                    line = line[:cols - 1].ljust(cols - 1) + "│"
+                    _safe_addstr(stdscr, row, 0, line[:cols], curses.color_pair(C_CAND))
+                    row += 1
+            else:
+                line = "│  (none above threshold)"
+                line = line[:cols - 1].ljust(cols - 1) + "│"
+                _safe_addstr(stdscr, row, 0, line[:cols], curses.color_pair(C_CAND))
+                row += 1
+
+            if row < rows - 3:
+                _safe_addstr(stdscr, row, 0, ("└" + "─" * (cols - 2) + "┘")[:cols],
+                             curses.color_pair(C_SEC))
+
+        # ── footer ──
+        footer = "  [q]uit  [r]efresh  [f]reeze  [t]haw"
+        _safe_addstr(stdscr, rows - 2, 0, footer.ljust(cols)[:cols],
+                     curses.color_pair(C_SEC) | curses.A_REVERSE)
+        if message:
+            _safe_addstr(stdscr, rows - 1, 0, message[:cols],
+                         curses.color_pair(C_PROMPT))
+
+        stdscr.refresh()
+
+        # ── input ──
+        key = stdscr.getch()
+        if key == ord("q"):
+            break
+        elif key == ord("r"):
+            message = ""
+        elif key == curses.KEY_RESIZE:
+            pass
+        elif key in (ord("f"), ord("t")):
+            action = "freeze" if key == ord("f") else "thaw"
+            curses.curs_set(1)
+            prompt = f"  {action} process name: "
+            _safe_addstr(stdscr, rows - 1, 0, " " * cols, 0)
+            _safe_addstr(stdscr, rows - 1, 0, prompt, curses.color_pair(C_PROMPT))
+            stdscr.refresh()
+            curses.echo()
+            try:
+                name_bytes = stdscr.getstr(rows - 1, len(prompt), 40)
+            except curses.error:
+                name_bytes = b""
+            curses.noecho()
+            curses.curs_set(0)
+            name_input = name_bytes.decode("utf-8", errors="replace").strip().lower()
+
+            if name_input:
+                if action == "freeze":
+                    match = None
+                    for pid, p in sorted(daemon.procs.items(), key=lambda x: -x[1].rss_mb):
+                        if name_input in p.name.lower() and not daemon._is_whitelisted(p.name, p.cmdline):
+                            match = (pid, p)
+                            break
+                    if match:
+                        pid, p = match
+                        daemon.freeze_pid(pid, reason="monitor")
+                        message = f"  Froze {p.name} (PID {pid})"
+                    else:
+                        message = f"  No matching process: {name_input}"
+                else:
+                    match = None
+                    for pid, p in daemon.procs.items():
+                        if name_input in p.name.lower() and daemon._is_stopped(pid):
+                            match = (pid, p)
+                            break
+                    if match:
+                        pid, p = match
+                        daemon.thaw_pid(pid)
+                        message = f"  Thawed {p.name} (PID {pid})"
+                    else:
+                        message = f"  No frozen process matching: {name_input}"
+            else:
+                message = ""
+
+
+def cmd_monitor(args):
+    curses.wrapper(_monitor_tui)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="frostbyte",
@@ -575,6 +772,9 @@ def main():
     p_freeze = sub.add_parser("freeze", help="Manually freeze a process")
     p_freeze.add_argument("name", help="Process name pattern")
     p_freeze.set_defaults(func=cmd_freeze)
+
+    p_monitor = sub.add_parser("monitor", help="Live TUI dashboard")
+    p_monitor.set_defaults(func=cmd_monitor)
 
     args = parser.parse_args()
     if not args.cmd:
