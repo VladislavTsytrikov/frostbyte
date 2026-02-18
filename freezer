@@ -350,9 +350,23 @@ class FreezerDaemon:
         PID_FILE.unlink(missing_ok=True)
         sys.exit(0)
 
+    def _check_already_running(self):
+        if PID_FILE.exists():
+            try:
+                old_pid = int(PID_FILE.read_text().strip())
+                os.kill(old_pid, 0)
+                print(f"Freezer already running (PID {old_pid})", file=sys.stderr)
+                sys.exit(1)
+            except (ProcessLookupError, ValueError):
+                pass
+            except PermissionError:
+                print(f"Freezer already running (PID {old_pid})", file=sys.stderr)
+                sys.exit(1)
+
     # ── main loop ───────────────────────────────────────────
 
     def run(self):
+        self._check_already_running()
         self._save_default_config()
         self._setup_logging()
         signal.signal(signal.SIGTERM, self._shutdown)
