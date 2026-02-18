@@ -5,7 +5,6 @@ After=graphical-session.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/freezer run
-ExecStop=%h/.local/bin/freezer thaw
 Restart=on-failure
 RestartSec=5
 

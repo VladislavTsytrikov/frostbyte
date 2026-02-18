@@ -20,7 +20,7 @@ Freezer is a lightweight daemon for GNOME/Wayland that monitors process CPU acti
 
 1. **Scan** — The daemon reads `/proc` every 30 seconds, tracking CPU ticks and RSS for each user-owned process.
 2. **Freeze** — When a process has been idle for the configured time (default 30 min) *and* exceeds the minimum RSS threshold (default 100 MB), the daemon sends `SIGSTOP` to the entire process tree.
-3. **Detect focus** — The GNOME Shell extension listens for window focus changes and click events (including clicks on frozen/unresponsive windows via the Clutter capture phase). On any such event it writes the window's PID to `/tmp/freezer-focus`.
+3. **Detect focus** — The GNOME Shell extension listens for window focus changes and click events (including clicks on frozen/unresponsive windows via the Clutter capture phase). On any such event it writes the window's PID to a temp file.
 4. **Thaw** — The daemon polls the focus file every 1 second. When it finds a PID, it walks up the process tree to locate the stopped ancestor and sends `SIGCONT` to the full tree, restoring the application instantly.
 5. **Panel indicator** — A GNOME Shell panel indicator shows currently frozen processes with one-click thaw buttons.
 
@@ -80,16 +80,24 @@ A default config is created on first run:
     "pulseaudio",
     "pipewire",
     "wireplumber",
+    "claude",
+    "tilix",
     "gnome-terminal",
     "kitty",
     "alacritty",
+    "wezterm",
     "bash",
     "zsh",
+    "fish",
     "freezer",
     "docker",
+    "containerd",
     "systemd",
     "dbus-daemon",
+    "dbus-broker",
     "ssh",
+    "sshd",
+    "gpg-agent",
     "gnome-keyring"
   ]
 }
