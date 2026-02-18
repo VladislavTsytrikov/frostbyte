@@ -2,6 +2,11 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+if ! command -v python3 &>/dev/null; then
+    echo "Error: python3 is required" >&2
+    exit 1
+fi
+
 echo "=== Installing Freezer ==="
 
 # daemon
@@ -42,3 +47,9 @@ echo "  freezer freeze <name>    — manually freeze a process"
 echo ""
 echo "Config: ~/.config/freezer/config.json"
 echo "Logs:   ~/.config/freezer/freezer.log"
+echo ""
+echo "To uninstall:"
+echo "  systemctl --user disable --now freezer.service"
+echo "  rm ~/.local/bin/freezer"
+echo "  rm -rf ~/.local/share/gnome-shell/extensions/freezer@cryogen"
+echo "  rm ~/.config/systemd/user/freezer.service"
