@@ -47,6 +47,10 @@ Modern apps are hungry. Firefox, Slack, VS Code, Spotify sit on **4+ GB of RAM**
 <tr><td><b>&#9608;</b></td><td><b>Live TUI</b></td><td>Real-time dashboard — frozen apps, candidates, RAM saved</td></tr>
 <tr><td><b>&#9851;</b></td><td><b>Smart Thaw</b></td><td>Wakes entire process trees including child processes (TUI apps in terminals)</td></tr>
 <tr><td><b>&#10052;</b></td><td><b>Auto-Freeze</b></td><td>Scans <code>/proc</code> for RAM-heavy apps idle beyond threshold</td></tr>
+<tr><td><b>&#127925;</b></td><td><b>Audio-Aware</b></td><td>Skips freezing apps that are currently playing audio</td></tr>
+<tr><td><b>&#128203;</b></td><td><b>Per-App Rules</b></td><td>Regex patterns with custom freeze timeouts per application</td></tr>
+<tr><td><b>&#128276;</b></td><td><b>Notifications</b></td><td>Desktop notifications when apps are frozen or thawed</td></tr>
+<tr><td><b>&#128260;</b></td><td><b>Hot Reload</b></td><td>Config changes apply instantly — no daemon restart needed</td></tr>
 <tr><td><b>&#128433;</b></td><td><b>Mouse-Friendly</b></td><td>Click frozen windows to thaw, even without focus</td></tr>
 <tr><td><b>&#9881;</b></td><td><b>Panel Indicator</b></td><td>GNOME top bar snowflake with live frozen count + quick-thaw menu</td></tr>
 <tr><td><b>&#127760;</b></td><td><b>Bilingual</b></td><td>English / Russian — toggle with <code>L</code></td></tr>
@@ -130,7 +134,7 @@ flowchart LR
     end
 
     scan -- "idle > N min\nRSS > threshold" --> freeze
-    focus -- "/tmp/frostbyte-focus" --> thaw
+    focus -- "$XDG_RUNTIME_DIR/frostbyte-focus" --> thaw
 
     style daemon fill:#1a1a2e,stroke:#00b4d8,color:#e0e0e0
     style ext fill:#1a1a2e,stroke:#7c3aed,color:#e0e0e0
@@ -160,7 +164,7 @@ frostbyte (single Python file)
 
 **Freeze cycle:** the daemon polls `/proc` every second, tracking CPU time per process. If a process with RSS above the threshold shows no CPU activity for N minutes, it gets `SIGSTOP`. The kernel reclaims the physical memory pages.
 
-**Thaw cycle:** the GNOME Shell extension writes the focused window's PID to `/tmp/frostbyte-focus-$UID`. The daemon reads this file, finds the frozen ancestor *and* stopped descendants (for TUI apps inside terminals), and sends `SIGCONT`.
+**Thaw cycle:** the GNOME Shell extension writes the focused window's PID to `$XDG_RUNTIME_DIR/frostbyte-focus`. The daemon reads this file, finds the frozen ancestor *and* stopped descendants (for TUI apps inside terminals), and sends `SIGCONT`.
 
 **Process tree awareness:** when you focus a terminal, FrostByte thaws both the terminal itself (ancestor search) and any stopped child processes like `vim`, `htop`, or `mc` inside it (descendant search).
 </details>
@@ -175,8 +179,13 @@ frostbyte (single Python file)
 {
   "freeze_after_minutes": 10,    // idle time before auto-freeze
   "min_rss_mb": 100,             // minimum RSS to consider
-  "scan_interval": 10,           // seconds between /proc scans
-  "whitelist": ["chrome", "spotify"]  // your additions
+  "scan_interval": 30,           // seconds between /proc scans
+  "notifications": true,         // desktop notifications on freeze/thaw
+  "whitelist": ["chrome"],       // your additions
+  "rules": [                     // per-app overrides (regex)
+    { "pattern": "firefox", "freeze_after_minutes": 30 },
+    { "pattern": "code", "min_rss_mb": 200 }
+  ]
 }
 ```
 
@@ -185,12 +194,40 @@ frostbyte (single Python file)
 | `freeze_after_minutes` | `10` | Idle time before auto-freeze |
 | `min_rss_mb` | `100` | Minimum RSS (MB) to consider freezing |
 | `poll_interval` | `1` | Seconds between CPU polls |
-| `scan_interval` | `10` | Seconds between full `/proc` scans |
+| `scan_interval` | `30` | Seconds between full `/proc` scans |
 | `max_freeze_hours` | `4` | Auto-thaw after this many hours |
+| `notifications` | `true` | Desktop notifications on freeze / thaw |
 | `whitelist` | `[]` | Extra process names to never freeze |
+| `rules` | `[]` | Per-app rules (see below) |
 
 > [!NOTE]
 > FrostByte ships with a built-in whitelist (gnome-shell, pipewire, terminals, systemd, etc.). Your `whitelist` entries are **merged** on top — you only need to add app-specific names.
+
+<details>
+<summary><b>Per-app rules</b></summary>
+
+<br>
+
+Rules let you set custom freeze thresholds for specific apps using regex patterns:
+
+```jsonc
+"rules": [
+  { "pattern": "firefox",  "freeze_after_minutes": 30 },  // give Firefox more time
+  { "pattern": "code",     "min_rss_mb": 200 },           // only freeze VS Code above 200 MB
+  { "pattern": "slack|discord", "freeze_after_minutes": 5 } // freeze chat apps faster
+]
+```
+
+Each rule supports `pattern` (regex, case-insensitive), `freeze_after_minutes`, and `min_rss_mb`. The first matching rule wins. Unset fields fall back to global defaults.
+</details>
+
+<details>
+<summary><b>Audio protection</b></summary>
+
+<br>
+
+FrostByte automatically detects apps playing audio via PulseAudio / PipeWire and skips freezing them. No configuration needed — if Spotify is playing music, it won't be frozen even if idle.
+</details>
 
 ---
 
@@ -217,6 +254,10 @@ frostbyte uninstall       remove everything
 | Auto-freeze (RAM-aware) | **yes** | no | no |
 | Instant thaw on focus | **yes** | no | yes |
 | Child process thawing | **yes** | no | no |
+| Audio-aware (skip playing) | **yes** | no | no |
+| Per-app rules (regex) | **yes** | no | no |
+| Config hot reload | **yes** | no | no |
+| Desktop notifications | **yes** | no | no |
 | Zero dependencies | **yes** | no | yes |
 | TUI dashboard | **yes** | no | no |
 | Single file install | **yes** | no | no |
