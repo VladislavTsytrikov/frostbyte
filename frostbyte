@@ -692,7 +692,7 @@ def _monitor_tui(stdscr):
     C_FOOTER = 9; C_FOOTER_KEY = 10; C_MSG = 11; C_SELECT = 12
     C_PROMPT = 13; C_HEAD = 14; C_DIM = 15; C_BAR_HOT = 16
     C_LOGO1 = 17; C_LOGO2 = 18; C_LOGO3 = 19; C_LOGO4 = 20; C_LOGO5 = 21
-    C_BTN = 22; C_BTN_SKIP = 23; C_HOVER = 24
+    C_BTN = 22; C_BTN_SKIP = 23; C_HOVER = 24; C_BTN_HOV = 25
 
     if use_256:
         curses.init_pair(C_LOGO, 81, -1)
@@ -716,9 +716,10 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_LOGO3, 87, -1)
         curses.init_pair(C_LOGO4, 81, -1)
         curses.init_pair(C_LOGO5, 75, -1)
-        curses.init_pair(C_BTN, 81, 237)
-        curses.init_pair(C_BTN_SKIP, 222, 237)
+        curses.init_pair(C_BTN, 81, 238)
+        curses.init_pair(C_BTN_SKIP, 222, 238)
         curses.init_pair(C_HOVER, 252, 235)
+        curses.init_pair(C_BTN_HOV, 16, 81)
     else:
         curses.init_pair(C_LOGO, curses.COLOR_CYAN, -1)
         curses.init_pair(C_BORDER, curses.COLOR_WHITE, -1)
@@ -741,6 +742,7 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_BTN, curses.COLOR_CYAN, curses.COLOR_BLACK)
         curses.init_pair(C_BTN_SKIP, curses.COLOR_YELLOW, curses.COLOR_BLACK)
         curses.init_pair(C_HOVER, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        curses.init_pair(C_BTN_HOV, curses.COLOR_BLACK, curses.COLOR_CYAN)
 
     _logo_grad = [C_LOGO1, C_LOGO2, C_LOGO3, C_LOGO4, C_LOGO5]
 
@@ -759,9 +761,10 @@ def _monitor_tui(stdscr):
     _tab2_start = 0
     _tab2_end = 0
     _block_y = []  # (y_start, y_end, index) for mouse click targets
-    _btn_act = None   # (y, x_start, x_end) for action button
-    _btn_skip = None  # (y, x_start, x_end) for skip button
+    _row_btns = []    # [(y, x_start, x_end, index, "act"|"skip"), ...]
     hover = -1        # block under mouse (visual only, separate from sel)
+    hover_btn = None  # (index, "act"|"skip") or None
+    hover_tab = -1    # -1 or 0/1/2
     lang = "en"
     S = _STRINGS[lang]
     _frame = 0
@@ -832,8 +835,7 @@ def _monitor_tui(stdscr):
 
         rows, cols = stdscr.getmaxyx()
         stdscr.erase()
-        _btn_act = None
-        _btn_skip = None
+        _row_btns = []
         _frame += 1
 
         if rows < 14 or cols < 60:
@@ -950,6 +952,9 @@ def _monitor_tui(stdscr):
             if tab == ti:
                 _safe_addstr(stdscr, r, tx, tlbl,
                              curses.color_pair(tcol) | curses.A_BOLD | curses.A_UNDERLINE)
+            elif hover_tab == ti:
+                _safe_addstr(stdscr, r, tx, tlbl,
+                             curses.color_pair(tcol) | curses.A_BOLD)
             else:
                 _safe_addstr(stdscr, r, tx, tlbl, curses.color_pair(C_DIM))
             tx += len(tlbl) + 3
@@ -1012,59 +1017,78 @@ def _monitor_tui(stdscr):
                     right = f"{rss_str}   {S['idle']} {idle:.1f}m"
 
                 left = f" ▸ {name}" if is_sel else (f" › {name}" if is_hover else f"   {name}")
-                gap = inner - len(left) - len(right) - 1
+
+                # ── button layout (every row gets action btn) ──
+                if tab == 0: btn_lbl = S["btn_thaw"]
+                elif tab == 1: btn_lbl = S["btn_freeze"]
+                else: btn_lbl = S["btn_remove"]
+                show_skip = (is_sel and tab != 2)
+                if show_skip:
+                    skip_lbl = S["btn_skip"]
+                    skip_x = cols - 1 - len(skip_lbl)
+                    act_x = skip_x - 1 - len(btn_lbl)
+                else:
+                    act_x = cols - 1 - len(btn_lbl)
+                _row_btns.append((rr, act_x, act_x + len(btn_lbl), idx, "act"))
+                if show_skip:
+                    _row_btns.append((rr, skip_x, skip_x + len(skip_lbl), idx, "skip"))
+
+                is_act_hov = (hover_btn is not None and hover_btn[0] == idx
+                              and hover_btn[1] == "act")
+                is_skip_hov = (show_skip and hover_btn is not None
+                               and hover_btn[0] == idx and hover_btn[1] == "skip")
+
+                right_end = act_x - 1
+                gap = right_end - 1 - len(left) - len(right)
                 if gap < 1:
                     gap = 1
 
                 # ── name line ──
                 _safe_addstr(stdscr, rr, 0, "│", bdr)
                 if is_sel:
-                    if tab == 0:
-                        btn_lbl = S["btn_thaw"]
-                    elif tab == 1:
-                        btn_lbl = S["btn_freeze"]
-                    else:
-                        btn_lbl = S["btn_remove"]
-                    show_skip = (tab != 2)
-                    if show_skip:
-                        skip_lbl = S["btn_skip"]
-                        skip_x = cols - 1 - len(skip_lbl)
-                        act_x = skip_x - 1 - len(btn_lbl)
-                    else:
-                        act_x = cols - 1 - len(btn_lbl)
                     _safe_addstr(stdscr, rr, 1, " " * inner,
                                  curses.color_pair(C_SELECT))
-                    _safe_addstr(stdscr, rr, 1, left[:inner],
+                    _safe_addstr(stdscr, rr, 1, left[:right_end - 1],
                                  curses.color_pair(C_SELECT) | curses.A_BOLD)
                     rx = 1 + len(left) + gap
-                    right_end = act_x - 1
                     if rx + len(right) <= right_end:
                         _safe_addstr(stdscr, rr, rx, right,
                                      curses.color_pair(C_SELECT))
-                    _safe_addstr(stdscr, rr, act_x, btn_lbl,
-                                 curses.color_pair(C_BTN) | curses.A_BOLD)
-                    _btn_act = (rr, act_x, act_x + len(btn_lbl))
-                    if show_skip:
-                        _safe_addstr(stdscr, rr, skip_x, skip_lbl,
-                                     curses.color_pair(C_BTN_SKIP) | curses.A_BOLD)
-                        _btn_skip = (rr, skip_x, skip_x + len(skip_lbl))
                 elif is_hover:
                     _safe_addstr(stdscr, rr, 1, " " * inner,
                                  curses.color_pair(C_HOVER))
-                    _safe_addstr(stdscr, rr, 1, left[:inner],
+                    _safe_addstr(stdscr, rr, 1, left[:right_end - 1],
                                  curses.color_pair(C_HOVER))
                     rx = 1 + len(left) + gap
-                    if rx + len(right) < cols - 1:
+                    if rx + len(right) <= right_end:
                         _safe_addstr(stdscr, rr, rx, right,
                                      curses.color_pair(C_HOVER))
                 else:
-                    rc = C_FROZEN if tab == 0 else C_CAND
-                    _safe_addstr(stdscr, rr, 1, left[:inner],
+                    rc = C_FROZEN if tab == 0 else (C_CAND if tab == 1 else C_DIM)
+                    _safe_addstr(stdscr, rr, 1, left[:right_end - 1],
                                  curses.color_pair(rc))
                     rx = 1 + len(left) + gap
-                    if rx + len(right) < cols - 1:
+                    if rx + len(right) <= right_end:
                         _safe_addstr(stdscr, rr, rx, right,
                                      curses.color_pair(C_HEAD))
+
+                # ── action button ──
+                if is_act_hov:
+                    ba = curses.color_pair(C_BTN_HOV) | curses.A_BOLD
+                elif is_sel or is_hover:
+                    ba = curses.color_pair(C_BTN) | curses.A_BOLD
+                else:
+                    ba = curses.color_pair(C_BTN)
+                _safe_addstr(stdscr, rr, act_x, btn_lbl, ba)
+
+                # ── skip button (selected row only) ──
+                if show_skip:
+                    if is_skip_hov:
+                        sa = curses.color_pair(C_BTN_HOV) | curses.A_BOLD
+                    else:
+                        sa = curses.color_pair(C_BTN_SKIP) | curses.A_BOLD
+                    _safe_addstr(stdscr, rr, skip_x, skip_lbl, sa)
+
                 _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
                 rr += 1
 
@@ -1145,7 +1169,7 @@ def _monitor_tui(stdscr):
 
         # ── footer ──
         _safe_addstr(stdscr, rows - 1, 0, " " * cols, curses.color_pair(C_FOOTER))
-        keys = [("q", S["k_quit"]), ("⏎/click", S["k_action"]),
+        keys = [("q", S["k_quit"]), ("⏎", S["k_action"]),
                 ("↑↓/scroll", S["k_select"]), ("tab", S["k_switch"]),
                 ("f", S["k_freeze"]), ("t", S["k_thaw"]),
                 ("e", S["k_exclude"]), ("L", S["k_lang"])]
@@ -1178,6 +1202,7 @@ def _monitor_tui(stdscr):
             sel = 0
             scroll = 0
             hover = -1
+            hover_btn = None
         elif key == curses.KEY_UP:
             sel = max(0, sel - 1)
         elif key == curses.KEY_DOWN:
@@ -1191,32 +1216,58 @@ def _monitor_tui(stdscr):
         elif key == curses.KEY_MOUSE:
             try:
                 _, mx, my, _, bstate = curses.getmouse()
+                # ── update hover on every mouse event ──
+                hover = -1
+                hover_btn = None
+                hover_tab = -1
+                if my == _tab_row:
+                    if 3 <= mx < _tab0_end:
+                        hover_tab = 0
+                    elif _tab1_start <= mx < _tab1_end:
+                        hover_tab = 1
+                    elif _tab2_start <= mx < _tab2_end:
+                        hover_tab = 2
+                for by, bx0, bx1, bidx, btype in _row_btns:
+                    if my == by and bx0 <= mx < bx1:
+                        hover_btn = (bidx, btype)
+                        hover = bidx
+                        break
+                else:
+                    for y0, y1, bi in _block_y:
+                        if y0 <= my < y1:
+                            hover = bi
+                            break
+                # ── handle clicks ──
+                _click = bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+                                   | curses.BUTTON1_RELEASED | curses.BUTTON1_DOUBLE_CLICKED)
                 if bstate & curses.BUTTON4_PRESSED:
                     sel = max(0, sel - 1)
                 elif bstate & _B5:
                     sel = min(len(items) - 1, sel + 1) if items else 0
-                elif bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
-                               | curses.BUTTON1_RELEASED | curses.BUTTON1_DOUBLE_CLICKED):
+                elif _click:
                     if my == _tab_row:
                         if 3 <= mx < _tab0_end:
-                            tab = 0; sel = 0; scroll = 0; hover = -1
+                            tab = 0; sel = 0; scroll = 0; hover = -1; hover_tab = -1
                         elif _tab1_start <= mx < _tab1_end:
-                            tab = 1; sel = 0; scroll = 0; hover = -1
+                            tab = 1; sel = 0; scroll = 0; hover = -1; hover_tab = -1
                         elif _tab2_start <= mx < _tab2_end:
-                            tab = 2; sel = 0; scroll = 0; hover = -1
-                    elif _btn_act and my == _btn_act[0] and _btn_act[1] <= mx < _btn_act[2]:
-                        perform_action = True
-                    elif _btn_skip and my == _btn_skip[0] and _btn_skip[1] <= mx < _btn_skip[2]:
-                        do_skip = True
+                            tab = 2; sel = 0; scroll = 0; hover = -1; hover_tab = -1
                     else:
-                        for y0, y1, bi in _block_y:
-                            if y0 <= my < y1:
-                                hover = bi
-                                if bi == sel:
+                        btn_hit = False
+                        for by, bx0, bx1, bidx, btype in _row_btns:
+                            if my == by and bx0 <= mx < bx1:
+                                sel = bidx
+                                if btype == "act":
                                     perform_action = True
                                 else:
-                                    sel = bi
+                                    do_skip = True
+                                btn_hit = True
                                 break
+                        if not btn_hit:
+                            for y0, y1, bi in _block_y:
+                                if y0 <= my < y1:
+                                    sel = bi
+                                    break
             except curses.error:
                 pass
         elif key == ord("L"):
