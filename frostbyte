@@ -119,6 +119,18 @@ class FrostByteDaemon:
         if not CONFIG_FILE.exists():
             CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
 
+    def _save_config(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(self.config, indent=2) + "\n")
+
+    def add_to_whitelist(self, name):
+        existing = [p.lower() for p in self.config["whitelist"]]
+        if name.lower() not in existing:
+            self.config["whitelist"].append(name)
+            self._save_config()
+            return True
+        return False
+
     # ── logging ─────────────────────────────────────────────
 
     def _setup_logging(self):
@@ -568,13 +580,28 @@ _LOGO = [
     "  ╚  ┴└─└─┘└─┘ ┴ ╚═╝ ┴  ┴ └─┘",
 ]
 
+_LOGO_BIG = [" ".join(r) for r in zip(
+    ["███████", "██     ", "█████  ", "██     ", "██     "],  # F
+    ["██████ ", "██   ██", "██████ ", "██   ██", "██   ██"],  # R
+    [" ██████ ", "██    ██", "██    ██", "██    ██", " ██████ "],  # O
+    ["███████", "██     ", "███████", "     ██", "███████"],  # S
+    ["████████", "   ██   ", "   ██   ", "   ██   ", "   ██   "],  # T
+    ["██████ ", "██   ██", "██████ ", "██   ██", "██████ "],  # B
+    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],  # Y
+    ["████████", "   ██   ", "   ██   ", "   ██   ", "   ██   "],  # T
+    ["███████", "██     ", "█████  ", "██     ", "███████"],  # E
+)]
+
+_SNOW = "·  ❄  ·  ✦  ·  ❄  ·  ✦  ·  ❄  ·  ✦  ·  ❄  ·"
+
 
 def _monitor_tui(stdscr):
     """Live curses dashboard — modern TUI with visual blocks."""
     curses.use_default_colors()
     curses.curs_set(0)
     stdscr.timeout(2000)
-    curses.mousemask(curses.ALL_MOUSE_EVENTS)
+    _MOUSE_MOVE = getattr(curses, 'REPORT_MOUSE_POSITION', 0)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
     _B5 = getattr(curses, 'BUTTON5_PRESSED', curses.BUTTON4_PRESSED << 2)
 
     use_256 = curses.COLORS >= 256
@@ -583,6 +610,8 @@ def _monitor_tui(stdscr):
     C_STAT_VAL = 5; C_STAT_LBL = 6; C_BAR_FULL = 7; C_BAR_EMPTY = 8
     C_FOOTER = 9; C_FOOTER_KEY = 10; C_MSG = 11; C_SELECT = 12
     C_PROMPT = 13; C_HEAD = 14; C_DIM = 15; C_BAR_HOT = 16
+    C_LOGO1 = 17; C_LOGO2 = 18; C_LOGO3 = 19; C_LOGO4 = 20; C_LOGO5 = 21
+    C_BTN = 22; C_BTN_SKIP = 23
 
     if use_256:
         curses.init_pair(C_LOGO, 81, -1)
@@ -601,6 +630,13 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_HEAD, 252, -1)
         curses.init_pair(C_DIM, 242, -1)
         curses.init_pair(C_BAR_HOT, 203, -1)
+        curses.init_pair(C_LOGO1, 159, -1)
+        curses.init_pair(C_LOGO2, 123, -1)
+        curses.init_pair(C_LOGO3, 87, -1)
+        curses.init_pair(C_LOGO4, 81, -1)
+        curses.init_pair(C_LOGO5, 75, -1)
+        curses.init_pair(C_BTN, 81, 237)
+        curses.init_pair(C_BTN_SKIP, 222, 237)
     else:
         curses.init_pair(C_LOGO, curses.COLOR_CYAN, -1)
         curses.init_pair(C_BORDER, curses.COLOR_WHITE, -1)
@@ -618,6 +654,12 @@ def _monitor_tui(stdscr):
         curses.init_pair(C_HEAD, curses.COLOR_WHITE, -1)
         curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
         curses.init_pair(C_BAR_HOT, curses.COLOR_RED, -1)
+        for cp in (C_LOGO1, C_LOGO2, C_LOGO3, C_LOGO4, C_LOGO5):
+            curses.init_pair(cp, curses.COLOR_CYAN, -1)
+        curses.init_pair(C_BTN, curses.COLOR_CYAN, curses.COLOR_BLACK)
+        curses.init_pair(C_BTN_SKIP, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+
+    _logo_grad = [C_LOGO1, C_LOGO2, C_LOGO3, C_LOGO4, C_LOGO5]
 
     bdr = curses.color_pair(C_BORDER)
     daemon = FrostByteDaemon()
@@ -626,11 +668,14 @@ def _monitor_tui(stdscr):
     tab = 0        # 0=frozen, 1=candidates
     sel = 0        # selected index in active tab
     scroll = 0     # scroll offset
+    last_scan = 0.0
     _tab_row = -1
     _tab0_end = 0
     _tab1_start = 0
     _tab1_end = 0
     _block_y = []  # (y_start, y_end, index) for mouse click targets
+    _btn_act = None   # (y, x_start, x_end) for action button
+    _btn_skip = None  # (y, x_start, x_end) for skip button
 
     def _framed(row, content="", attr=0):
         w = cols - 2
@@ -646,9 +691,14 @@ def _monitor_tui(stdscr):
         return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
 
     while True:
-        daemon.scan()
+        now_t = time.time()
+        if now_t - last_scan >= 2.0:
+            daemon.scan()
+            last_scan = now_t
         rows, cols = stdscr.getmaxyx()
         stdscr.erase()
+        _btn_act = None
+        _btn_skip = None
 
         if rows < 14 or cols < 60:
             _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 10),
@@ -708,20 +758,53 @@ def _monitor_tui(stdscr):
         # ── top border ──
         _hline(r, "╭", "╮"); r += 1
 
-        # ── logo ──
-        logo_w = max(len(l) for l in _LOGO)
+        # ── logo (adaptive: big with gradient or compact) ──
+        use_big = inner >= 77 and rows >= 24
+        logo = _LOGO_BIG if use_big else _LOGO
+        logo_w = max(len(l) for l in logo)
         lx = max(1, (cols - logo_w) // 2)
-        tagline = "auto-freeze for idle apps"
-        for i, line in enumerate(_LOGO):
+
+        if use_big:
+            # snowflake decoration line
+            sx = max(1, (cols - len(_SNOW)) // 2)
+            _safe_addstr(stdscr, r, 0, "│", bdr)
+            _safe_addstr(stdscr, r, sx, _SNOW[:inner],
+                         curses.color_pair(C_DIM))
+            _safe_addstr(stdscr, r, cols - 1, "│", bdr)
+            r += 1
+
+        for i, line in enumerate(logo):
             _safe_addstr(stdscr, r + i, 0, "│", bdr)
+            if use_big:
+                lc = _logo_grad[i] if i < len(_logo_grad) else C_LOGO
+            else:
+                lc = C_LOGO
             _safe_addstr(stdscr, r + i, lx, line,
-                         curses.color_pair(C_LOGO) | curses.A_BOLD)
+                         curses.color_pair(lc) | curses.A_BOLD)
             _safe_addstr(stdscr, r + i, cols - 1, "│", bdr)
-        tx = cols - 2 - len(tagline) - 1
-        if tx > lx + logo_w + 2:
-            _safe_addstr(stdscr, r + len(_LOGO) - 1, tx, tagline,
+        r += len(logo)
+
+        if use_big:
+            # snowflake decoration line
+            _safe_addstr(stdscr, r, 0, "│", bdr)
+            _safe_addstr(stdscr, r, sx, _SNOW[:inner],
+                         curses.color_pair(C_DIM))
+            _safe_addstr(stdscr, r, cols - 1, "│", bdr)
+            r += 1
+            # tagline centered below logo
+            tagline = "❄  auto-freeze for idle apps  ❄"
+            ttx = max(1, (cols - len(tagline)) // 2)
+            _safe_addstr(stdscr, r, 0, "│", bdr)
+            _safe_addstr(stdscr, r, ttx, tagline,
                          curses.color_pair(C_STAT_LBL))
-        r += len(_LOGO)
+            _safe_addstr(stdscr, r, cols - 1, "│", bdr)
+            r += 1
+        else:
+            tagline = "auto-freeze for idle apps"
+            tx = cols - 2 - len(tagline) - 1
+            if tx > lx + logo_w + 2:
+                _safe_addstr(stdscr, r - 1, tx, tagline,
+                             curses.color_pair(C_STAT_LBL))
 
         _framed(r); r += 1
 
@@ -823,14 +906,25 @@ def _monitor_tui(stdscr):
                 # ── name line ──
                 _safe_addstr(stdscr, rr, 0, "│", bdr)
                 if is_sel:
+                    btn_lbl = " Thaw " if tab == 0 else " Freeze "
+                    skip_lbl = " Skip "
+                    skip_x = cols - 1 - len(skip_lbl)
+                    act_x = skip_x - 1 - len(btn_lbl)
                     _safe_addstr(stdscr, rr, 1, " " * inner,
                                  curses.color_pair(C_SELECT))
                     _safe_addstr(stdscr, rr, 1, left[:inner],
                                  curses.color_pair(C_SELECT) | curses.A_BOLD)
                     rx = 1 + len(left) + gap
-                    if rx + len(right) < cols - 1:
+                    right_end = act_x - 1
+                    if rx + len(right) <= right_end:
                         _safe_addstr(stdscr, rr, rx, right,
-                                     curses.color_pair(C_SELECT) | curses.A_BOLD)
+                                     curses.color_pair(C_SELECT))
+                    _safe_addstr(stdscr, rr, act_x, btn_lbl,
+                                 curses.color_pair(C_BTN) | curses.A_BOLD)
+                    _safe_addstr(stdscr, rr, skip_x, skip_lbl,
+                                 curses.color_pair(C_BTN_SKIP) | curses.A_BOLD)
+                    _btn_act = (rr, act_x, act_x + len(btn_lbl))
+                    _btn_skip = (rr, skip_x, skip_x + len(skip_lbl))
                 else:
                     rc = C_FROZEN if tab == 0 else C_CAND
                     _safe_addstr(stdscr, rr, 1, left[:inner],
@@ -909,7 +1003,7 @@ def _monitor_tui(stdscr):
         # ── footer ──
         _safe_addstr(stdscr, rows - 1, 0, " " * cols, curses.color_pair(C_FOOTER))
         keys = [("q", "quit"), ("⏎/click", "thaw/freeze"), ("↑↓/scroll", "select"),
-                ("tab", "switch"), ("f", "freeze"), ("t", "thaw")]
+                ("tab", "switch"), ("f", "freeze"), ("t", "thaw"), ("e", "exclude")]
         fx = 1
         for k, d in keys:
             if fx >= cols - 4:
@@ -926,6 +1020,7 @@ def _monitor_tui(stdscr):
         # ── input ──
         key = stdscr.getch()
         perform_action = False
+        do_skip = False
 
         if key in (ord("q"), 27):
             break
@@ -972,6 +1067,10 @@ def _monitor_tui(stdscr):
                             tab = 0; sel = 0; scroll = 0
                         elif _tab1_start <= mx < _tab1_end:
                             tab = 1; sel = 0; scroll = 0
+                    elif _btn_act and my == _btn_act[0] and _btn_act[1] <= mx < _btn_act[2]:
+                        perform_action = True
+                    elif _btn_skip and my == _btn_skip[0] and _btn_skip[1] <= mx < _btn_skip[2]:
+                        do_skip = True
                     else:
                         for y0, y1, bi in _block_y:
                             if y0 <= my < y1:
@@ -980,8 +1079,17 @@ def _monitor_tui(stdscr):
                                 else:
                                     sel = bi
                                 break
+                else:
+                    # hover — select block under cursor
+                    for y0, y1, bi in _block_y:
+                        if y0 <= my < y1:
+                            sel = bi
+                            break
             except curses.error:
                 pass
+        elif key == ord("e"):
+            if items and 0 <= sel < len(items):
+                do_skip = True
         elif key in (ord("f"), ord("t")):
             action = "freeze" if key == ord("f") else "thaw"
             curses.curs_set(1)
@@ -1001,7 +1109,7 @@ def _monitor_tui(stdscr):
                 nb = b""
             curses.noecho()
             curses.curs_set(0)
-            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mousemask(curses.ALL_MOUSE_EVENTS | _MOUSE_MOVE)
             ni = nb.decode("utf-8", errors="replace").strip().lower()
             if ni:
                 if action == "freeze":
@@ -1044,6 +1152,14 @@ def _monitor_tui(stdscr):
                     daemon.freeze_pid(pid, reason="monitor")
                 n = len(group["pids"])
                 message = f"❄ Froze {group['name']} ({n} proc{'s' if n != 1 else ''})"
+            msg_time = now
+
+        if do_skip and items and 0 <= sel < len(items):
+            group = items[sel]
+            if daemon.add_to_whitelist(group["name"]):
+                message = f"⊘ Excluded '{group['name']}' from freezing"
+            else:
+                message = f"  '{group['name']}' already excluded"
             msg_time = now
 
 
