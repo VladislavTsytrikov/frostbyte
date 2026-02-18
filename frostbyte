@@ -134,6 +134,14 @@ class FrostByteDaemon:
             return True
         return False
 
+    def remove_from_whitelist(self, name):
+        try:
+            self.config["whitelist"].remove(name)
+            self._save_config()
+            return True
+        except ValueError:
+            return False
+
     # ── logging ─────────────────────────────────────────────
 
     def _setup_logging(self):
@@ -642,6 +650,8 @@ _STRINGS = {
         "k_switch": "switch", "k_freeze": "freeze", "k_thaw": "thaw",
         "k_exclude": "exclude", "k_lang": "язык",
         "freeze_prompt": "freeze ▸ ", "thaw_prompt": "thaw ▸ ",
+        "tab_excl": " ⊘ Exclusions ({}) ", "no_excl": "No exclusions",
+        "btn_remove": " Remove ", "removed": "✓ Removed",
     },
     "ru": {
         "ram_saved": "ОЗУ", "frozen": "Заморож.", "candidates": "Кандидаты",
@@ -659,6 +669,8 @@ _STRINGS = {
         "k_switch": "вкладка", "k_freeze": "замор.", "k_thaw": "разм.",
         "k_exclude": "искл.", "k_lang": "lang",
         "freeze_prompt": "заморозить ▸ ", "thaw_prompt": "разморозить ▸ ",
+        "tab_excl": " ⊘ Исключения ({}) ", "no_excl": "Нет исключений",
+        "btn_remove": " Убрать ", "removed": "✓ Убрано",
     },
 }
 
@@ -738,7 +750,7 @@ def _monitor_tui(stdscr):
     daemon = FrostByteDaemon()
     message = ""
     msg_time = 0.0
-    tab = 0        # 0=frozen, 1=candidates
+    tab = 0        # 0=frozen, 1=candidates, 2=exclusions
     sel = 0        # selected index in active tab
     scroll = 0     # scroll offset
     last_scan = 0.0
@@ -746,6 +758,8 @@ def _monitor_tui(stdscr):
     _tab0_end = 0
     _tab1_start = 0
     _tab1_end = 0
+    _tab2_start = 0
+    _tab2_end = 0
     _block_y = []  # (y_start, y_end, index) for mouse click targets
     _btn_act = None   # (y, x_start, x_end) for action button
     _btn_skip = None  # (y, x_start, x_end) for skip button
@@ -768,18 +782,61 @@ def _monitor_tui(stdscr):
     def _fmt_mb(mb):
         return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
 
+    # cached data — only refreshed on scan
+    frozen_list = []
+    candidates = []
+    saved_mb = 0.0
+    fg_list = []
+    cg_list = []
+
     while True:
         now_t = time.time()
         if now_t - last_scan >= 2.0:
             daemon.scan()
             last_scan = now_t
+            now = time.time()
+            threshold = daemon.config["freeze_after_minutes"]
+            min_rss = daemon.config["min_rss_mb"]
+
+            # ── collect data (only on scan) ──
+            frozen_list = []
+            candidates = []
+            saved_mb = 0.0
+            for pid, p in sorted(daemon.procs.items(), key=lambda x: -x[1].rss_mb):
+                try:
+                    raw = _read_file(f"/proc/{pid}/stat")
+                    rp = raw.rindex(")")
+                    state = raw[rp + 2:].split()[0]
+                except Exception:
+                    state = "?"
+                if state == "T":
+                    frozen_list.append((pid, p))
+                    saved_mb += p.rss_mb
+                elif not daemon._is_whitelisted(p.name, p.cmdline) and p.rss_mb >= min_rss:
+                    idle_min = (now - p.last_active) / 60
+                    candidates.append((pid, p, idle_min))
+            candidates.sort(key=lambda x: -x[2])
+
+            fg = {}
+            for pid, p in frozen_list:
+                g = fg.setdefault(p.name, {"name": p.name, "pids": [], "total_rss": 0.0})
+                g["pids"].append(pid)
+                g["total_rss"] += p.rss_mb
+            fg_list = sorted(fg.values(), key=lambda g: -g["total_rss"])
+
+            cg = {}
+            for pid, p, idle in candidates:
+                g = cg.setdefault(p.name, {"name": p.name, "pids": [], "total_rss": 0.0, "max_idle": 0.0})
+                g["pids"].append(pid)
+                g["total_rss"] += p.rss_mb
+                g["max_idle"] = max(g["max_idle"], idle)
+            cg_list = sorted(cg.values(), key=lambda g: -g["max_idle"])
+
         rows, cols = stdscr.getmaxyx()
         stdscr.erase()
         _btn_act = None
         _btn_skip = None
         _frame += 1
-        dt = now_t - _last_frame if _last_frame else 0.016
-        _last_frame = now_t
 
         if rows < 14 or cols < 60:
             _safe_addstr(stdscr, rows // 2, max(0, cols // 2 - 10),
@@ -790,47 +847,16 @@ def _monitor_tui(stdscr):
                 break
             continue
 
-        now = time.time()
         threshold = daemon.config["freeze_after_minutes"]
-        min_rss = daemon.config["min_rss_mb"]
         inner = cols - 2
 
-        # ── collect data ──
-        frozen_list = []
-        candidates = []
-        saved_mb = 0.0
-        for pid, p in sorted(daemon.procs.items(), key=lambda x: -x[1].rss_mb):
-            try:
-                raw = _read_file(f"/proc/{pid}/stat")
-                rp = raw.rindex(")")
-                state = raw[rp + 2:].split()[0]
-            except Exception:
-                state = "?"
-            if state == "T":
-                frozen_list.append((pid, p))
-                saved_mb += p.rss_mb
-            elif not daemon._is_whitelisted(p.name, p.cmdline) and p.rss_mb >= min_rss:
-                idle_min = (now - p.last_active) / 60
-                candidates.append((pid, p, idle_min))
-        candidates.sort(key=lambda x: -x[2])
-
-        # ── group by process name ──
-        fg = {}
-        for pid, p in frozen_list:
-            g = fg.setdefault(p.name, {"name": p.name, "pids": [], "total_rss": 0.0})
-            g["pids"].append(pid)
-            g["total_rss"] += p.rss_mb
-        fg_list = sorted(fg.values(), key=lambda g: -g["total_rss"])
-
-        cg = {}
-        for pid, p, idle in candidates:
-            g = cg.setdefault(p.name, {"name": p.name, "pids": [], "total_rss": 0.0, "max_idle": 0.0})
-            g["pids"].append(pid)
-            g["total_rss"] += p.rss_mb
-            g["max_idle"] = max(g["max_idle"], idle)
-        cg_list = sorted(cg.values(), key=lambda g: -g["max_idle"])
-
-        items = fg_list if tab == 0 else cg_list
+        # ── items for current tab ──
+        if tab == 0:
+            items = fg_list
+        elif tab == 1:
+            items = cg_list
+        else:
+            items = [{"name": p} for p in daemon.config["whitelist"]]
         if sel >= len(items):
             sel = max(0, len(items) - 1)
 
@@ -910,23 +936,25 @@ def _monitor_tui(stdscr):
         # ── tab bar ──
         tab0 = S["tab_frozen"].format(len(frozen_list))
         tab1 = S["tab_cand"].format(len(candidates))
+        tab2 = S["tab_excl"].format(len(daemon.config["whitelist"]))
         _safe_addstr(stdscr, r, 0, "│", bdr)
         t0x = 3
-        if tab == 0:
-            _safe_addstr(stdscr, r, t0x, tab0,
-                         curses.color_pair(C_LOGO) | curses.A_BOLD | curses.A_UNDERLINE)
-        else:
-            _safe_addstr(stdscr, r, t0x, tab0, curses.color_pair(C_DIM))
-        t1x = t0x + len(tab0) + 3
+        _tab_labels = [(tab0, C_LOGO, 0), (tab1, C_CAND, 1), (tab2, C_DIM, 2)]
+        tx = t0x
         _tab_row = r
-        _tab0_end = t0x + len(tab0)
-        _tab1_start = t1x
-        _tab1_end = t1x + len(tab1)
-        if tab == 1:
-            _safe_addstr(stdscr, r, t1x, tab1,
-                         curses.color_pair(C_CAND) | curses.A_BOLD | curses.A_UNDERLINE)
-        else:
-            _safe_addstr(stdscr, r, t1x, tab1, curses.color_pair(C_DIM))
+        for tlbl, tcol, ti in _tab_labels:
+            if ti == 0:
+                _tab0_end = tx + len(tlbl)
+            elif ti == 1:
+                _tab1_start = tx; _tab1_end = tx + len(tlbl)
+            else:
+                _tab2_start = tx; _tab2_end = tx + len(tlbl)
+            if tab == ti:
+                _safe_addstr(stdscr, r, tx, tlbl,
+                             curses.color_pair(tcol) | curses.A_BOLD | curses.A_UNDERLINE)
+            else:
+                _safe_addstr(stdscr, r, tx, tlbl, curses.color_pair(C_DIM))
+            tx += len(tlbl) + 3
         _safe_addstr(stdscr, r, cols - 1, "│", bdr)
         r += 1
 
@@ -942,7 +970,7 @@ def _monitor_tui(stdscr):
         if content_h < 2 or not items:
             _block_y = []
             mid = content_top + content_h // 2
-            empty = S["no_frozen"] if tab == 0 else S["no_candidates"]
+            empty = S["no_frozen"] if tab == 0 else (S["no_candidates"] if tab == 1 else S["no_excl"])
             for rr in range(content_top, content_bot):
                 if rr == mid:
                     _framed(rr, f"   {empty}", curses.color_pair(C_DIM))
@@ -959,7 +987,7 @@ def _monitor_tui(stdscr):
             scroll = max(0, min(scroll, len(items) - max_vis))
 
             visible = items[scroll:scroll + max_vis]
-            max_rss = max(g["total_rss"] for g in items)
+            max_rss = max((g.get("total_rss", 0) for g in items), default=1)
             bar_w = max(8, inner - 6)  # full-width bar
 
             _block_y = []
@@ -972,13 +1000,16 @@ def _monitor_tui(stdscr):
                 is_sel = (idx == sel)
                 is_hover = (idx == hover and not is_sel)
                 name = group["name"]
-                rss_str = _fmt_mb(group["total_rss"])
 
-                if tab == 0:
+                if tab == 2:
+                    right = ""
+                elif tab == 0:
+                    rss_str = _fmt_mb(group["total_rss"])
                     n = len(group["pids"])
                     plbl = S["procs"] if n != 1 else S["proc"]
                     right = f"{rss_str}   {n} {plbl}"
                 else:
+                    rss_str = _fmt_mb(group["total_rss"])
                     idle = group["max_idle"]
                     right = f"{rss_str}   {S['idle']} {idle:.1f}m"
 
@@ -990,10 +1021,19 @@ def _monitor_tui(stdscr):
                 # ── name line ──
                 _safe_addstr(stdscr, rr, 0, "│", bdr)
                 if is_sel:
-                    btn_lbl = S["btn_thaw"] if tab == 0 else S["btn_freeze"]
-                    skip_lbl = S["btn_skip"]
-                    skip_x = cols - 1 - len(skip_lbl)
-                    act_x = skip_x - 1 - len(btn_lbl)
+                    if tab == 0:
+                        btn_lbl = S["btn_thaw"]
+                    elif tab == 1:
+                        btn_lbl = S["btn_freeze"]
+                    else:
+                        btn_lbl = S["btn_remove"]
+                    show_skip = (tab != 2)
+                    if show_skip:
+                        skip_lbl = S["btn_skip"]
+                        skip_x = cols - 1 - len(skip_lbl)
+                        act_x = skip_x - 1 - len(btn_lbl)
+                    else:
+                        act_x = cols - 1 - len(btn_lbl)
                     _safe_addstr(stdscr, rr, 1, " " * inner,
                                  curses.color_pair(C_SELECT))
                     _safe_addstr(stdscr, rr, 1, left[:inner],
@@ -1005,10 +1045,11 @@ def _monitor_tui(stdscr):
                                      curses.color_pair(C_SELECT))
                     _safe_addstr(stdscr, rr, act_x, btn_lbl,
                                  curses.color_pair(C_BTN) | curses.A_BOLD)
-                    _safe_addstr(stdscr, rr, skip_x, skip_lbl,
-                                 curses.color_pair(C_BTN_SKIP) | curses.A_BOLD)
                     _btn_act = (rr, act_x, act_x + len(btn_lbl))
-                    _btn_skip = (rr, skip_x, skip_x + len(skip_lbl))
+                    if show_skip:
+                        _safe_addstr(stdscr, rr, skip_x, skip_lbl,
+                                     curses.color_pair(C_BTN_SKIP) | curses.A_BOLD)
+                        _btn_skip = (rr, skip_x, skip_x + len(skip_lbl))
                 elif is_hover:
                     _safe_addstr(stdscr, rr, 1, " " * inner,
                                  curses.color_pair(C_HOVER))
@@ -1029,8 +1070,8 @@ def _monitor_tui(stdscr):
                 _safe_addstr(stdscr, rr, cols - 1, "│", bdr)
                 rr += 1
 
-                # ── bar line (full-width) ──
-                if rr < content_bot:
+                # ── bar line (full-width, skip for exclusions) ──
+                if rr < content_bot and tab != 2:
                     _safe_addstr(stdscr, rr, 0, "│", bdr)
                     if is_sel:
                         _safe_addstr(stdscr, rr, 1, " " * inner,
@@ -1096,7 +1137,7 @@ def _monitor_tui(stdscr):
         r = content_bot
 
         # ── message ──
-        if message and now - msg_time > 5:
+        if message and now_t - msg_time > 5:
             message = ""
         _framed(r, f"  {message}" if message else "", curses.color_pair(C_MSG))
         r += 1
@@ -1137,7 +1178,7 @@ def _monitor_tui(stdscr):
         elif key == curses.KEY_RESIZE:
             pass
         elif key == ord("\t") or key == curses.KEY_BTAB:
-            tab = 1 - tab
+            tab = (tab + 1) % 3
             sel = 0
             scroll = 0
             hover = -1
@@ -1154,28 +1195,27 @@ def _monitor_tui(stdscr):
         elif key == curses.KEY_MOUSE:
             try:
                 _, mx, my, _, bstate = curses.getmouse()
+                # always update hover on any mouse event
+                hover = -1
+                for y0, y1, bi in _block_y:
+                    if y0 <= my < y1:
+                        hover = bi
+                        break
+                # handle buttons/clicks
+                _click = bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+                                   | curses.BUTTON1_DOUBLE_CLICKED)
                 if bstate & curses.BUTTON4_PRESSED:
                     sel = max(0, sel - 1)
                 elif bstate & _B5:
                     sel = min(len(items) - 1, sel + 1) if items else 0
-                elif bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                elif _click:
                     if my == _tab_row:
                         if 3 <= mx < _tab0_end:
-                            tab = 0; sel = 0; scroll = 0
+                            tab = 0; sel = 0; scroll = 0; hover = -1
                         elif _tab1_start <= mx < _tab1_end:
-                            tab = 1; sel = 0; scroll = 0
-                    else:
-                        for y0, y1, bi in _block_y:
-                            if y0 <= my < y1:
-                                sel = bi
-                                perform_action = True
-                                break
-                elif bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED):
-                    if my == _tab_row:
-                        if 3 <= mx < _tab0_end:
-                            tab = 0; sel = 0; scroll = 0
-                        elif _tab1_start <= mx < _tab1_end:
-                            tab = 1; sel = 0; scroll = 0
+                            tab = 1; sel = 0; scroll = 0; hover = -1
+                        elif _tab2_start <= mx < _tab2_end:
+                            tab = 2; sel = 0; scroll = 0; hover = -1
                     elif _btn_act and my == _btn_act[0] and _btn_act[1] <= mx < _btn_act[2]:
                         perform_action = True
                     elif _btn_skip and my == _btn_skip[0] and _btn_skip[1] <= mx < _btn_skip[2]:
@@ -1188,13 +1228,6 @@ def _monitor_tui(stdscr):
                                 else:
                                     sel = bi
                                 break
-                else:
-                    # hover — highlight block under cursor
-                    hover = -1
-                    for y0, y1, bi in _block_y:
-                        if y0 <= my < y1:
-                            hover = bi
-                            break
             except curses.error:
                 pass
         elif key == ord("L"):
@@ -1251,7 +1284,7 @@ def _monitor_tui(stdscr):
                         message = f"{S['thawed']} {p.name} (PID {pid})"
                     else:
                         message = f"{S['no_frozen_match']}: {ni}"
-                msg_time = now
+                msg_time = now_t
             else:
                 message = ""
 
@@ -1263,21 +1296,26 @@ def _monitor_tui(stdscr):
                 n = len(group["pids"])
                 plbl = S["procs"] if n != 1 else S["proc"]
                 message = f"{S['thawed']} {group['name']} ({n} {plbl})"
-            else:
+            elif tab == 1:
                 for pid in group["pids"]:
                     daemon.freeze_pid(pid, reason="monitor")
                 n = len(group["pids"])
                 plbl = S["procs"] if n != 1 else S["proc"]
                 message = f"{S['froze']} {group['name']} ({n} {plbl})"
-            msg_time = now
+            else:
+                daemon.remove_from_whitelist(group["name"])
+                message = f"{S['removed']} '{group['name']}'"
+            msg_time = now_t
+            last_scan = 0.0  # force data refresh
 
-        if do_skip and items and 0 <= sel < len(items):
+        if do_skip and tab != 2 and items and 0 <= sel < len(items):
             group = items[sel]
             if daemon.add_to_whitelist(group["name"]):
                 message = f"{S['excluded']} '{group['name']}'"
             else:
                 message = f"  '{group['name']}' {S['already_excl']}"
-            msg_time = now
+            msg_time = now_t
+            last_scan = 0.0  # force data refresh
 
 
 def cmd_monitor(args):
