@@ -86,6 +86,7 @@ class FreezerDaemon:
         self.uid = os.getuid()
         self.procs: Dict[int, Proc] = {}
         self.frozen: Set[int] = set()
+        self._ppid_map: Dict[int, List[int]] = {}
         self.config = self._load_config()
         if config_overrides:
             self.config.update(config_overrides)
@@ -189,6 +190,16 @@ class FreezerDaemon:
                     IndexError, PermissionError):
                 continue
 
+        self._ppid_map = {}
+        for pid in seen:
+            try:
+                raw = _read_file(f"/proc/{pid}/stat")
+                rp = raw.rindex(")")
+                ppid = int(raw[rp + 2:].split()[1])
+                self._ppid_map.setdefault(ppid, []).append(pid)
+            except Exception:
+                continue
+
         # purge dead
         for pid in set(self.procs) - seen:
             del self.procs[pid]
@@ -199,19 +210,9 @@ class FreezerDaemon:
     def _children(self, pid: int) -> List[int]:
         """Return list of all descendant PIDs."""
         kids = []
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            try:
-                raw = _read_file(f"/proc/{entry}/stat")
-                rp = raw.rindex(")")
-                ppid = int(raw[rp + 2 :].split()[1])
-                if ppid == pid:
-                    child = int(entry)
-                    kids.append(child)
-                    kids.extend(self._children(child))
-            except Exception:
-                continue
+        for child in self._ppid_map.get(pid, []):
+            kids.append(child)
+            kids.extend(self._children(child))
         return kids
 
     def freeze_pid(self, pid: int, reason: str = ""):
