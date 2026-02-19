@@ -640,6 +640,116 @@ class TestCheckFocusSelectiveThaw:
             mock_thaw.assert_called_once_with(20)
 
 
+class TestLazyThaw:
+    """Multi-process apps (browsers) should thaw one child per poll cycle,
+    not all at once."""
+
+    def _setup(self, num_children=4):
+        d = _make_daemon()
+        now = time.time()
+        children = list(range(100, 100 + num_children))
+        d._ppid_map = {50: children}
+        for i, pid in enumerate(children):
+            d.procs[pid] = fb.Proc(pid=pid, name=f"renderer{i}",
+                                    cmdline=f"chrome --type=renderer --id={i}",
+                                    cpu=0, rss_mb=200,
+                                    last_active=now - (num_children - i),
+                                    frozen=True)
+            d.frozen.add(pid)
+            d._frozen_at[pid] = now - (num_children - i)
+        return d, children
+
+    def test_first_call_thaws_only_one(self):
+        """On first focus, only the most recently active child thaws."""
+        d, children = self._setup(4)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            focus_file = Path(tmpdir) / "frostbyte-focus"
+            focus_file.write_text("50")
+
+            with mock.patch.object(fb, "FOCUS_FILE", focus_file), \
+                 mock.patch.object(d, "_find_stopped_ancestor", return_value=None), \
+                 mock.patch.object(d, "thaw_pid") as mock_thaw:
+                d._check_focus()
+
+            # Only one child thawed (the most recently active)
+            mock_thaw.assert_called_once_with(103)
+            # Queue holds the remaining 3
+            assert len(d._lazy_thaw_queue) == 3
+
+    def test_subsequent_calls_thaw_one_per_cycle(self):
+        """Each subsequent _check_focus thaws the next child in queue."""
+        d, children = self._setup(4)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            focus_file = Path(tmpdir) / "frostbyte-focus"
+            focus_file.write_text("50")
+
+            with mock.patch.object(fb, "FOCUS_FILE", focus_file), \
+                 mock.patch.object(d, "_find_stopped_ancestor", return_value=None), \
+                 mock.patch.object(d, "thaw_pid") as mock_thaw:
+                # Simulate 4 poll cycles
+                for _ in range(4):
+                    d._check_focus()
+                    # Remove thawed pid from frozen set (thaw_pid is mocked)
+                    if mock_thaw.call_args:
+                        d.frozen.discard(mock_thaw.call_args[0][0])
+                    mock_thaw.reset_mock()
+
+            # After 4 cycles, all should be thawed
+            assert len(d.frozen) == 0
+
+    def test_focus_change_cancels_queue(self):
+        """Switching to a different app cancels the lazy thaw queue."""
+        d, children = self._setup(4)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            focus_file = Path(tmpdir) / "frostbyte-focus"
+            focus_file.write_text("50")
+
+            with mock.patch.object(fb, "FOCUS_FILE", focus_file), \
+                 mock.patch.object(d, "_find_stopped_ancestor", return_value=None), \
+                 mock.patch.object(d, "thaw_pid") as mock_thaw:
+                # First cycle: thaw one
+                d._check_focus()
+                d.frozen.discard(mock_thaw.call_args[0][0])
+                assert len(d._lazy_thaw_queue) == 3
+
+                # User switches to a different app (no frozen children)
+                focus_file.write_text("999")
+                d._ppid_map[999] = []
+                d._check_focus()
+
+            # Queue should be cleared
+            assert d._lazy_thaw_queue == []
+            assert d._lazy_thaw_pid is None
+            # 3 children still frozen
+            assert len(d.frozen) == 3
+
+    def test_single_frozen_child_thaws_immediately(self):
+        """A process with only 1 frozen child should thaw it immediately
+        (no lazy thaw needed)."""
+        d = _make_daemon()
+        d._ppid_map = {50: [100, 101]}
+        d.procs[100] = fb.Proc(pid=100, name="renderer", cmdline="chrome",
+                                cpu=0, rss_mb=200, last_active=time.time(),
+                                frozen=True)
+        d.frozen = {100}
+        d._frozen_at[100] = time.time()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            focus_file = Path(tmpdir) / "frostbyte-focus"
+            focus_file.write_text("50")
+
+            with mock.patch.object(fb, "FOCUS_FILE", focus_file), \
+                 mock.patch.object(d, "_find_stopped_ancestor", return_value=None), \
+                 mock.patch.object(d, "thaw_pid") as mock_thaw:
+                d._check_focus()
+
+            mock_thaw.assert_called_once_with(100)
+            assert d._lazy_thaw_queue == []
+
+
 # ═══════════════════════════════════════════════════════════════
 # Review #2 MEDIUM fixes
 # ═══════════════════════════════════════════════════════════════

@@ -362,6 +362,8 @@ class FrostByteDaemon:
         self._pending_notifications: List[tuple] = []
         self._compiled_rules: List[dict] = []
         self._compile_rules()
+        self._lazy_thaw_queue: List[int] = []
+        self._lazy_thaw_pid: Optional[int] = None
 
     # ── config ──────────────────────────────────────────────
 
@@ -698,16 +700,35 @@ class FrostByteDaemon:
                 raw = FOCUS_FILE.read_text().strip()
                 if raw:
                     pid = int(raw)
-                    # check if this pid or any ancestor is actually stopped
                     stopped = self._find_stopped_ancestor(pid)
                     if stopped:
                         self.thaw_pid(stopped)
-                    # also thaw descendants that WE froze (not all stopped children —
-                    # gnome-terminal-server parents ALL terminal tabs, so blindly
-                    # thawing every stopped descendant would unfreeze unrelated apps)
-                    for child in self._children(pid):
-                        if child in self.frozen:
+                    frozen_children = [c for c in self._children(pid)
+                                       if c in self.frozen]
+                    if len(frozen_children) > 1:
+                        # Multi-process app (browser, terminal server, etc.)
+                        # Lazy thaw: one per poll cycle to avoid waking all tabs
+                        if self._lazy_thaw_pid != pid or not self._lazy_thaw_queue:
+                            # New focus target or queue exhausted — start fresh
+                            frozen_children.sort(
+                                key=lambda p: (self.procs[p].last_active
+                                               if p in self.procs else 0),
+                                reverse=True)
+                            self.thaw_pid(frozen_children[0])
+                            self._lazy_thaw_queue = frozen_children[1:]
+                            self._lazy_thaw_pid = pid
+                        else:
+                            # Continue gradual thaw
+                            while (self._lazy_thaw_queue
+                                   and self._lazy_thaw_queue[0] not in self.frozen):
+                                self._lazy_thaw_queue.pop(0)
+                            if self._lazy_thaw_queue:
+                                self.thaw_pid(self._lazy_thaw_queue.pop(0))
+                    else:
+                        for child in frozen_children:
                             self.thaw_pid(child)
+                        self._lazy_thaw_queue = []
+                        self._lazy_thaw_pid = None
         except (ValueError, IOError):
             pass
 
