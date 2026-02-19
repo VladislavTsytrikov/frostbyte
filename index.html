@@ -1,68 +1,240 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="scroll-smooth">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FrostByte | Reclaim your RAM on Linux</title>
-    <meta name="description" content="A zero-config background daemon that auto-freezes idle applications to save GBs of RAM on GNOME/Wayland.">
+    <title>FrostByte | Cold Efficiency for your RAM</title>
+    <meta name="description" content="Auto-freeze idle Linux apps. Instant memory reclamation for GNOME & Wayland.">
+    
+    <!-- Scripts & Styles -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+
     <style>
-        body { background-color: #0f172a; color: #f8fafc; }
-        .hero-gradient { background: radial-gradient(circle at top, #1e293b 0%, #0f172a 100%); }
+        :root {
+            --bg: #020617;
+            --accent: #3b82f6;
+            --emerald: #10b981;
+            --violet: #8b5cf6;
+        }
+        body { 
+            background-color: var(--bg); 
+            color: #f8fafc;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            overflow-x: hidden;
+        }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Grid Background with Parallax effect */
+        .grid-bg {
+            background-image: linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px),
+                              linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+            mask-image: radial-gradient(circle at 50% 50%, black, transparent 80%);
+        }
+
+        .glass {
+            background: rgba(30, 41, 59, 0.4);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .neo-glow {
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
+        }
+
+        @keyframes pulse-slow {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.05); }
+        }
+        .blob {
+            position: absolute;
+            filter: blur(80px);
+            z-index: -1;
+            animation: pulse-slow 10s infinite;
+        }
+
+        /* Snail Animation for fun */
+        @keyframes slide-snail {
+            0% { transform: translateX(-10px) rotate(-5deg); }
+            50% { transform: translateX(10px) rotate(5deg); }
+            100% { transform: translateX(-10px) rotate(-5deg); }
+        }
+        .snail-bounce { animation: slide-snail 4s ease-in-out infinite; }
+
+        /* Memory block states */
+        .mem-block { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .mem-active { background: #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.5); }
+        .mem-frozen { background: #3b82f6; box-shadow: 0 0 15px rgba(59, 130, 246, 0.8); transform: scale(0.9); }
+        .mem-free { background: #1e293b; border: 1px solid rgba(255,255,255,0.1); }
     </style>
 </head>
-<body class="font-sans">
-    <section class="hero-gradient min-h-screen flex flex-col items-center justify-center px-4 py-20">
-        <div class="max-w-4xl w-full text-center">
-            <h1 class="text-6xl md:text-8xl font-black mb-6 tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
-                FrostByte
+<body>
+    <div class="fixed inset-0 grid-bg pointer-events-none"></div>
+    
+    <!-- Ambient Blobs -->
+    <div class="blob w-96 h-96 bg-blue-600 top-[-10%] left-[-10%] rounded-full opacity-20"></div>
+    <div class="blob w-96 h-96 bg-emerald-600 bottom-[10%] right-[-10%] rounded-full opacity-20" style="animation-delay: -2s"></div>
+
+    <!-- Navigation -->
+    <nav class="fixed top-0 w-full z-50 px-6 py-4 flex justify-between items-center glass border-b border-white/5">
+        <div class="flex items-center gap-2">
+            <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-emerald-500 rounded-lg flex items-center justify-center font-black text-white">F</div>
+            <span class="font-bold text-xl tracking-tight">FrostByte</span>
+        </div>
+        <div class="flex gap-6 items-center">
+            <a href="https://github.com/VladislavTsytrikov/frostbyte" class="hover:text-blue-400 transition-colors">Documentation</a>
+            <a href="https://github.com/VladislavTsytrikov/frostbyte" class="bg-blue-600 hover:bg-blue-500 px-5 py-2 rounded-full font-bold text-sm transition-all flex items-center gap-2">
+                <i data-lucide="github" class="w-4 h-4"></i> Star on GitHub
+            </a>
+        </div>
+    </nav>
+
+    <main class="relative pt-32 pb-20 px-6">
+        <!-- Hero Section -->
+        <section class="max-w-6xl mx-auto text-center flex flex-col items-center">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold mb-8 mono" data-aos="fade-down">
+                <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                </span>
+                v2.4.0 Now Live
+            </div>
+            
+            <h1 class="text-7xl md:text-9xl font-black mb-8 tracking-tighter" data-aos="zoom-in" data-aos-delay="100">
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-emerald-400 to-violet-400">
+                    RAM on Ice.
+                </span>
             </h1>
-            <p class="text-xl md:text-2xl text-slate-400 mb-10 leading-relaxed">
-                Save Gigabytes of RAM on Linux by auto-freezing idle applications. <br class="hidden md:block">
-                Zero dependencies. Instant thaw. Built for GNOME & Wayland.
+            
+            <p class="text-xl md:text-2xl text-slate-400 max-w-2xl mb-12 leading-relaxed" data-aos="fade-up" data-aos-delay="200">
+                A zero-config background daemon that auto-freezes idle applications to reclaim gigabytes of memory. Transparent, fast, and built for GNOME & Wayland.
             </p>
-            <div class="flex flex-wrap justify-center gap-4">
-                <a href="https://github.com/VladislavTsytrikov/frostbyte" class="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-full font-bold text-lg transition-all transform hover:scale-105">
-                    View on GitHub
+
+            <div class="flex flex-wrap justify-center gap-6 mb-20" data-aos="fade-up" data-aos-delay="300">
+                <a href="#install" class="bg-white text-slate-900 px-10 py-5 rounded-2xl font-black text-lg hover:bg-slate-200 transition-all transform hover:-translate-y-1 neo-glow">
+                    Get Started
                 </a>
-                <div class="bg-slate-800 border border-slate-700 px-6 py-4 rounded-full font-mono text-sm flex items-center group cursor-pointer relative">
-                    <span class="text-emerald-400 mr-2">$</span>
-                    <span class="text-slate-300 select-all">curl -sS https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main/install.sh | bash</span>
+                <div class="glass px-8 py-5 rounded-2xl flex items-center gap-4 group cursor-pointer border-white/10 hover:border-white/20 transition-all">
+                    <i data-lucide="terminal" class="w-6 h-6 text-emerald-400 group-hover:scale-110 transition-transform"></i>
+                    <code class="mono text-sm text-slate-300">curl -sS https://raw.github...</code>
                 </div>
             </div>
-        </div>
 
-        <div class="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl w-full px-4">
-            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700 transition-all hover:border-blue-500/50">
-                <h3 class="text-xl font-bold mb-4 text-blue-300">Auto-Suspend</h3>
-                <p class="text-slate-400 leading-relaxed">FrostByte monitors CPU activity via <code>/proc</code> and sends <code>SIGSTOP</code> to apps that stay idle too long. RAM is reclaimed instantly by the kernel.</p>
+            <!-- Interactive RAM Visualizer -->
+            <div class="w-full max-w-4xl glass rounded-[40px] p-8 md:p-12 mb-32 border-white/5 relative overflow-hidden" data-aos="fade-up">
+                <div class="flex flex-col md:flex-row items-center gap-12 relative z-10 text-left">
+                    <div class="flex-1">
+                        <h2 class="text-3xl font-bold mb-4">See it in action</h2>
+                        <p class="text-slate-400 mb-8">Watch how FrostByte identifies idle processes and puts them into a "Frozen" state. The memory is instantly marked as free by the Linux kernel.</p>
+                        <button onclick="simulateFreeze()" class="group flex items-center gap-3 bg-blue-500/20 border border-blue-500/30 text-blue-300 px-6 py-3 rounded-xl font-bold hover:bg-blue-500/30 transition-all">
+                            <i data-lucide="snowflake" class="w-5 h-5 group-hover:rotate-12 transition-transform"></i>
+                            Simulate Auto-Freeze
+                        </button>
+                    </div>
+                    <div class="flex-1 grid grid-cols-8 gap-2 p-4 bg-black/40 rounded-3xl border border-white/5 shadow-inner" id="memoryGrid">
+                        <!-- Blocks generated by JS -->
+                    </div>
+                </div>
             </div>
-            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700 transition-all hover:border-emerald-500/50">
-                <h3 class="text-xl font-bold mb-4 text-emerald-300">Lazy Thaw</h3>
-                <p class="text-slate-400 leading-relaxed">Only the active process thaws immediately. Children (like Chrome renderer tabs) wake up one-by-one to prevent system resource spikes.</p>
-            </div>
-            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700 transition-all hover:border-violet-500/50">
-                <h3 class="text-xl font-bold mb-4 text-violet-300">Native GNOME</h3>
-                <p class="text-slate-400 leading-relaxed">Includes a companion GNOME Shell extension for transparent Wayland support. It tracks focus and click events to wake apps instantly.</p>
-            </div>
-        </div>
+        </section>
 
-        <div class="mt-20 max-w-4xl w-full bg-slate-900/50 border border-slate-800 rounded-3xl p-10">
-            <h2 class="text-3xl font-bold mb-8 text-center">Technical Deep Dive</h2>
-            <div class="space-y-6 text-slate-400">
-                <p>Most Linux "memory savers" rely on killing processes. FrostByte is different. It uses the kernel's own signaling mechanism to <strong>suspend</strong> processes without losing state.</p>
-                <ul class="list-disc pl-6 space-y-2">
-                    <li><strong>Process Tree Awareness:</strong> Correcty handles complex multi-process applications like Chrome, Discord, and VS Code.</li>
-                    <li><strong>Audio Detection:</strong> Automatically whitelists any application currently playing audio via PulseAudio or PipeWire.</li>
-                    <li><strong>Zero Config:</strong> Intelligent defaults out of the box, with per-app rules available for power users.</li>
-                    <li><strong>Window-Aware:</strong> The daemon works in sync with the window manager to ensure an "instant on" experience.</li>
-                </ul>
+        <!-- Features Grid -->
+        <section class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8 mb-32">
+            <div class="glass p-10 rounded-[32px] border-white/5 group hover:border-blue-500/30 transition-all" data-aos="fade-up" data-aos-delay="100">
+                <div class="w-14 h-14 bg-blue-500/20 rounded-2xl flex items-center justify-center mb-6">
+                    <i data-lucide="cpu" class="w-7 h-7 text-blue-400"></i>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">Auto-Suspend</h3>
+                <p class="text-slate-400 leading-relaxed">Monitors CPU patterns. When an app stays idle for 10 minutes, it gets a SIGSTOP signal. RAM is reclaimed, but the app stays ready.</p>
             </div>
-        </div>
-    </section>
+            <div class="glass p-10 rounded-[32px] border-white/5 group hover:border-emerald-500/30 transition-all" data-aos="fade-up" data-aos-delay="200">
+                <div class="w-14 h-14 bg-emerald-500/20 rounded-2xl flex items-center justify-center mb-6">
+                    <i data-lucide="zap" class="w-7 h-7 text-emerald-400"></i>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">Lazy Thaw</h3>
+                <p class="text-slate-400 leading-relaxed">Focusing a heavy app? Only the main window thaws instantly. Child tabs (Chrome, VS Code) wake up one-by-one to keep the UI snappy.</p>
+            </div>
+            <div class="glass p-10 rounded-[32px] border-white/5 group hover:border-violet-500/30 transition-all" data-aos="fade-up" data-aos-delay="300">
+                <div class="w-14 h-14 bg-violet-500/20 rounded-2xl flex items-center justify-center mb-6">
+                    <i data-lucide="music" class="w-7 h-7 text-violet-400"></i>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">Audio Aware</h3>
+                <p class="text-slate-400 leading-relaxed">Never breaks your flow. FrostByte detects active audio streams via PipeWire/PulseAudio and automatically whitelists those apps.</p>
+            </div>
+        </section>
 
-    <footer class="py-10 border-t border-slate-800 text-center text-slate-500 text-sm">
-        Built with ❤️ by <a href="https://github.com/VladislavTsytrikov" class="hover:text-blue-400 underline">Vladislav Tsytrikov</a> and his AI partners.
+        <!-- Technical Block -->
+        <section class="max-w-4xl mx-auto glass p-12 rounded-[40px] border-white/5 mb-32" data-aos="fade-up" id="install">
+            <h2 class="text-4xl font-black mb-10 text-center">Engineered for GNOME</h2>
+            <div class="space-y-8 text-lg text-slate-300">
+                <div class="flex gap-6">
+                    <div class="text-blue-400 font-bold mono">01.</div>
+                    <p>Transparent integration via a companion <strong>GNOME Shell Extension</strong>. It tracks window focus and click events for near-zero latency wake-ups.</p>
+                </div>
+                <div class="flex gap-6">
+                    <div class="text-emerald-400 font-bold mono">02.</div>
+                    <p>Handles <strong>complex process trees</strong>. Whether it's a deep hierarchy of terminal processes or an Electron beast, FrostByte keeps it tidy.</p>
+                </div>
+                <div class="flex gap-6">
+                    <div class="text-violet-400 font-bold mono">03.</div>
+                    <p><strong>Pure Python.</strong> No heavy runtimes, no complex dependencies. Just a fast, efficient background service managed by <code>systemd</code>.</p>
+                </div>
+            </div>
+            <div class="mt-12 p-6 bg-black/50 rounded-2xl border border-white/5 flex flex-col md:flex-row items-center gap-6">
+                <div class="flex-1">
+                    <div class="text-sm text-slate-500 mb-2 uppercase tracking-widest font-bold">One-liner Install</div>
+                    <code class="mono text-blue-400 text-sm break-all">curl -sS https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main/install.sh | bash</code>
+                </div>
+                <i data-lucide="copy" class="w-6 h-6 text-slate-600 hover:text-white cursor-pointer transition-colors"></i>
+            </div>
+        </section>
+        
+        <!-- Snail Easter Egg -->
+        <div class="text-center snail-bounce opacity-30 pointer-events-none select-none">
+            <span class="text-6xl">🐌</span>
+        </div>
+    </main>
+
+    <footer class="py-20 glass border-t border-white/5 text-center">
+        <p class="text-slate-400 mb-4 font-bold text-lg underline decoration-blue-500 decoration-4 underline-offset-4">FrostByte v2.4.0</p>
+        <p class="text-slate-500">Hand-crafted with code and ИИ for <a href="https://github.com/VladislavTsytrikov" class="hover:text-white transition-colors">Vladislav Tsytrikov</a>.</p>
     </footer>
+
+    <script>
+        // Init Lucide
+        lucide.createIcons();
+        
+        // Init AOS
+        AOS.init({
+            duration: 800,
+            once: true,
+            easing: 'ease-out-quad'
+        });
+
+        // Memory Grid Simulation
+        const grid = document.getElementById('memoryGrid');
+        for (let i = 0; i < 48; i++) {
+            const div = document.createElement('div');
+            div.className = 'w-full aspect-square rounded-sm mem-block ' + 
+                            (Math.random() > 0.4 ? 'mem-active' : 'mem-free');
+            grid.appendChild(div);
+        }
+
+        function simulateFreeze() {
+            const active = document.querySelectorAll('.mem-active');
+            active.forEach((el, i) => {
+                setTimeout(() => {
+                    el.classList.replace('mem-active', 'mem-frozen');
+                    setTimeout(() => {
+                        el.classList.replace('mem-frozen', 'mem-free');
+                    }, 1000);
+                }, i * 50);
+            });
+        }
+    </script>
 </body>
 </html>
