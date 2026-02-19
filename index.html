@@ -25,30 +25,44 @@
                 <a href="https://github.com/VladislavTsytrikov/frostbyte" class="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-full font-bold text-lg transition-all transform hover:scale-105">
                     View on GitHub
                 </a>
-                <code class="bg-slate-800 border border-slate-700 px-6 py-4 rounded-full font-mono text-sm flex items-center">
-                    curl -sS https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main/install.sh | bash
-                </code>
+                <div class="bg-slate-800 border border-slate-700 px-6 py-4 rounded-full font-mono text-sm flex items-center group cursor-pointer relative">
+                    <span class="text-emerald-400 mr-2">$</span>
+                    <span class="text-slate-300 select-all">curl -sS https://raw.githubusercontent.com/VladislavTsytrikov/frostbyte/main/install.sh | bash</span>
+                </div>
             </div>
         </div>
 
-        <div class="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl w-full">
-            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700">
+        <div class="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl w-full px-4">
+            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700 transition-all hover:border-blue-500/50">
                 <h3 class="text-xl font-bold mb-4 text-blue-300">Auto-Suspend</h3>
-                <p class="text-slate-400">FrostByte monitors CPU activity and sends SIGSTOP to apps that stay idle too long. RAM is reclaimed instantly by the kernel.</p>
+                <p class="text-slate-400 leading-relaxed">FrostByte monitors CPU activity via <code>/proc</code> and sends <code>SIGSTOP</code> to apps that stay idle too long. RAM is reclaimed instantly by the kernel.</p>
             </div>
-            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700">
+            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700 transition-all hover:border-emerald-500/50">
                 <h3 class="text-xl font-bold mb-4 text-emerald-300">Lazy Thaw</h3>
-                <p class="text-slate-400">Only the active process thaws immediately. Children (like Chrome tabs) wake up one-by-one to prevent system spikes.</p>
+                <p class="text-slate-400 leading-relaxed">Only the active process thaws immediately. Children (like Chrome renderer tabs) wake up one-by-one to prevent system resource spikes.</p>
             </div>
-            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700">
-                <h3 class="text-xl font-bold mb-4 text-violet-300">Audio Aware</h3>
-                <p class="text-slate-400">Never worry about your music stopping. FrostByte detects active audio streams and keeps players running.</p>
+            <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700 transition-all hover:border-violet-500/50">
+                <h3 class="text-xl font-bold mb-4 text-violet-300">Native GNOME</h3>
+                <p class="text-slate-400 leading-relaxed">Includes a companion GNOME Shell extension for transparent Wayland support. It tracks focus and click events to wake apps instantly.</p>
+            </div>
+        </div>
+
+        <div class="mt-20 max-w-4xl w-full bg-slate-900/50 border border-slate-800 rounded-3xl p-10">
+            <h2 class="text-3xl font-bold mb-8 text-center">Technical Deep Dive</h2>
+            <div class="space-y-6 text-slate-400">
+                <p>Most Linux "memory savers" rely on killing processes. FrostByte is different. It uses the kernel's own signaling mechanism to <strong>suspend</strong> processes without losing state.</p>
+                <ul class="list-disc pl-6 space-y-2">
+                    <li><strong>Process Tree Awareness:</strong> Correcty handles complex multi-process applications like Chrome, Discord, and VS Code.</li>
+                    <li><strong>Audio Detection:</strong> Automatically whitelists any application currently playing audio via PulseAudio or PipeWire.</li>
+                    <li><strong>Zero Config:</strong> Intelligent defaults out of the box, with per-app rules available for power users.</li>
+                    <li><strong>Window-Aware:</strong> The daemon works in sync with the window manager to ensure an "instant on" experience.</li>
+                </ul>
             </div>
         </div>
     </section>
 
     <footer class="py-10 border-t border-slate-800 text-center text-slate-500 text-sm">
-        Built with ❤️ by Vladislav Tsytrikov and his AI partners.
+        Built with ❤️ by <a href="https://github.com/VladislavTsytrikov" class="hover:text-blue-400 underline">Vladislav Tsytrikov</a> and his AI partners.
     </footer>
 </body>
 </html>
