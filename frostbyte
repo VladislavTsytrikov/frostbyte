@@ -112,6 +112,7 @@ export default class FrostByteExtension extends Extension {
                             this._refresh();
                             return GLib.SOURCE_CONTINUE;
                         }
+                        this._pollId = null;
                         return GLib.SOURCE_REMOVE;
                     });
             } else if (this._pollId) {
@@ -358,6 +359,7 @@ class FrostByteDaemon:
         self._should_exit = False
         self._config_mtime = 0.0
         self._audio_pids: Set[int] = set()
+        self._pending_notifications: List[tuple] = []
         self._compiled_rules: List[dict] = []
         self._compile_rules()
 
@@ -365,16 +367,31 @@ class FrostByteDaemon:
 
     def _validate_config(self):
         cfg = self.config
-        if cfg.get("poll_interval", 1) <= 0:
-            cfg["poll_interval"] = 1
-        if cfg.get("scan_interval", 30) <= 0:
-            cfg["scan_interval"] = 30
-        if cfg.get("freeze_after_minutes", 10) <= 0:
-            cfg["freeze_after_minutes"] = 10
-        if cfg.get("min_rss_mb", 100) < 0:
-            cfg["min_rss_mb"] = 100
-        if cfg.get("max_freeze_hours", 4) < 0:
-            cfg["max_freeze_hours"] = 0
+        #                     key                  default  allow_zero  neg_fallback  max_val
+        for key, default, allow_zero, neg_fallback, max_val in [
+            ("poll_interval",        1,  False, None, 3600),
+            ("scan_interval",       30,  False, None, 3600),
+            ("freeze_after_minutes", 10, False, None, 1440),
+            ("min_rss_mb",          100, True,  None, 65536),
+            ("max_freeze_hours",      4, True,  0,    168),   # negative → 0 (disabled)
+        ]:
+            try:
+                val = cfg.get(key, default)
+                if isinstance(val, bool):
+                    raise TypeError("bool not allowed")
+                if not isinstance(val, (int, float)):
+                    val = int(float(val))
+                if not math.isfinite(val):
+                    raise ValueError("non-finite")
+                if val < 0:
+                    val = neg_fallback if neg_fallback is not None else default
+                elif not allow_zero and val == 0:
+                    val = default
+                if max_val is not None and val > max_val:
+                    val = max_val
+                cfg[key] = val
+            except (TypeError, ValueError, OverflowError):
+                cfg[key] = default
 
     def _load_config(self) -> dict:
         cfg = DEFAULT_CONFIG.copy()
@@ -398,11 +415,15 @@ class FrostByteDaemon:
     def _save_default_config(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if not CONFIG_FILE.exists():
-            CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+            tmp = CONFIG_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+            tmp.rename(CONFIG_FILE)
 
     def _save_config(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(self.config, indent=2) + "\n")
+        tmp = CONFIG_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.config, indent=2) + "\n")
+        tmp.rename(CONFIG_FILE)
 
     def add_to_whitelist(self, name):
         existing = [p.lower() for p in self.config["whitelist"]]
@@ -519,6 +540,7 @@ class FrostByteDaemon:
                     if p.frozen and state != "T":
                         p.frozen = False
                         self.frozen.discard(pid)
+                        self._frozen_at.pop(pid, None)
                 else:
                     self.procs[pid] = Proc(
                         pid=pid,
@@ -744,7 +766,7 @@ class FrostByteDaemon:
         try:
             r = subprocess.run(
                 ["pactl", "list", "sink-inputs"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=2,
             )
             if r.returncode == 0:
                 for line in r.stdout.splitlines():
@@ -757,21 +779,55 @@ class FrostByteDaemon:
                             pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
-        self._audio_pids = pids
+        # Include ancestors of audio-producing processes so that parent
+        # PIDs tracked in self.procs (e.g. browser main process) are also
+        # protected when a child subprocess is the one producing audio.
+        expanded = set(pids)
+        for pid in pids:
+            current = pid
+            while current > 1:
+                try:
+                    raw = _read_file(f"/proc/{current}/stat")
+                    rp = raw.rindex(")")
+                    current = int(raw[rp + 2:].split()[1])
+                except Exception:
+                    break
+                if current <= 1 or current in expanded:
+                    break
+                expanded.add(current)
+        self._audio_pids = expanded
 
     # ── notifications ─────────────────────────────────────
 
     def _notify(self, title: str, body: str):
-        """Send desktop notification via notify-send (fire and forget)."""
+        """Queue a desktop notification. Call _flush_notifications() to send."""
         if not self.config.get("notifications", True):
             return
-        try:
-            subprocess.Popen(
-                ["notify-send", "-a", "FrostByte", "-i", "dialog-information", title, body],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            pass
+        self._pending_notifications.append((title, body))
+
+    def _flush_notifications(self):
+        """Send queued notifications, batching multiple into one."""
+        pending = self._pending_notifications
+        if not pending:
+            return
+        self._pending_notifications = []
+        # Group by title (e.g. "Frozen", "Thawed")
+        groups: Dict[str, List[str]] = {}
+        for title, body in pending:
+            groups.setdefault(title, []).append(body)
+        for title, bodies in groups.items():
+            if len(bodies) == 1:
+                body = bodies[0]
+            else:
+                body = f"{len(bodies)} apps: " + ", ".join(bodies)
+            try:
+                subprocess.Popen(
+                    ["notify-send", "-a", "FrostByte", "-i", "dialog-information", title, body],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,  # prevent zombie processes
+                )
+            except FileNotFoundError:
+                pass
 
     # ── config hot reload ─────────────────────────────────
 
@@ -780,13 +836,13 @@ class FrostByteDaemon:
         try:
             mt = CONFIG_FILE.stat().st_mtime
             if mt != self._config_mtime:
-                self._config_mtime = mt
-                old_cfg = self.config
                 self.config = self._load_config()
+                self._validate_config()
                 self._compile_rules()
+                self._config_mtime = mt
                 logging.info("Config reloaded")
-        except OSError:
-            pass
+        except Exception:
+            logging.warning("Config reload failed, will retry next cycle")
 
     # ── status + thaw-request ────────────────────────────────
 
@@ -800,7 +856,9 @@ class FrostByteDaemon:
                 saved_mb += p.rss_mb
         data = {"frozen": frozen_list, "saved_mb": round(saved_mb), "active": True}
         try:
-            STATUS_FILE.write_text(json.dumps(data) + "\n")
+            tmp = STATUS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data) + "\n")
+            tmp.rename(STATUS_FILE)
         except Exception:
             pass
 
@@ -834,7 +892,9 @@ class FrostByteDaemon:
             except Exception:
                 pass
         try:
-            STATUS_FILE.write_text(json.dumps({"frozen": [], "saved_mb": 0, "active": False}) + "\n")
+            tmp = STATUS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"frozen": [], "saved_mb": 0, "active": False}) + "\n")
+            tmp.rename(STATUS_FILE)
         except Exception:
             pass
         THAW_FILE.unlink(missing_ok=True)
@@ -902,14 +962,13 @@ class FrostByteDaemon:
 
         PID_FILE.write_text(str(os.getpid()))
 
-        cfg = self.config
         logging.info(
-            f"FrostByte started — freeze after {cfg['freeze_after_minutes']}min, "
-            f"min RSS {cfg['min_rss_mb']}MB, "
-            f"poll {cfg['poll_interval']}s, scan {cfg['scan_interval']}s"
+            f"FrostByte started — freeze after {self.config['freeze_after_minutes']}min, "
+            f"min RSS {self.config['min_rss_mb']}MB, "
+            f"poll {self.config['poll_interval']}s, scan {self.config['scan_interval']}s"
         )
 
-        scans_per_tick = max(1, cfg["scan_interval"] // cfg["poll_interval"])
+        scans_per_tick = int(max(1, self.config["scan_interval"] // self.config["poll_interval"]))
 
         # thaw orphaned stopped processes from a previous daemon crash
         self.scan()
@@ -922,6 +981,7 @@ class FrostByteDaemon:
             while not self._should_exit:
                 self._check_focus()
                 self._check_thaw()
+                self._flush_notifications()
 
                 self._tick += 1
                 if self._tick >= scans_per_tick:
@@ -930,10 +990,12 @@ class FrostByteDaemon:
                     self._refresh_audio_pids()
                     self._check_freeze()
                     self._check_auto_thaw()
+                    self._flush_notifications()
                     self._write_status()
                     self._reload_config_if_changed()
+                    scans_per_tick = int(max(1, self.config["scan_interval"] // self.config["poll_interval"]))
 
-                time.sleep(cfg["poll_interval"])
+                time.sleep(self.config["poll_interval"])
         finally:
             self._clean_exit()
 
