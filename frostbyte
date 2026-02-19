@@ -353,6 +353,7 @@ class FrostByteDaemon:
         self.config = self._load_config()
         if config_overrides:
             self.config.update(config_overrides)
+        self._validate_config()
         self._tick = 0
         self._should_exit = False
         self._config_mtime = 0.0
@@ -361,6 +362,19 @@ class FrostByteDaemon:
         self._compile_rules()
 
     # ── config ──────────────────────────────────────────────
+
+    def _validate_config(self):
+        cfg = self.config
+        if cfg.get("poll_interval", 1) <= 0:
+            cfg["poll_interval"] = 1
+        if cfg.get("scan_interval", 30) <= 0:
+            cfg["scan_interval"] = 30
+        if cfg.get("freeze_after_minutes", 10) <= 0:
+            cfg["freeze_after_minutes"] = 10
+        if cfg.get("min_rss_mb", 100) < 0:
+            cfg["min_rss_mb"] = 100
+        if cfg.get("max_freeze_hours", 4) < 0:
+            cfg["max_freeze_hours"] = 0
 
     def _load_config(self) -> dict:
         cfg = DEFAULT_CONFIG.copy()
@@ -399,12 +413,13 @@ class FrostByteDaemon:
         return False
 
     def remove_from_whitelist(self, name):
-        try:
-            self.config["whitelist"].remove(name)
-            self._save_config()
-            return True
-        except ValueError:
-            return False
+        low = name.lower()
+        for i, entry in enumerate(self.config["whitelist"]):
+            if entry.lower() == low:
+                self.config["whitelist"].pop(i)
+                self._save_config()
+                return True
+        return False
 
     # ── per-app rules ──────────────────────────────────────
 
@@ -444,10 +459,12 @@ class FrostByteDaemon:
 
     def _is_whitelisted(self, name: str, cmdline: str) -> bool:
         nl = name.lower()
-        cl = cmdline.lower()
+        # match name and each argv token's basename, not raw substring of full cmdline
+        tokens = cmdline.split() if cmdline.strip() else []
+        bases = [t.rsplit("/", 1)[-1].lower() for t in tokens]
         for pat in self.config["whitelist"]:
             p = pat.lower()
-            if p in nl or p in cl:
+            if p in nl or any(p in b for b in bases):
                 return True
         return False
 
