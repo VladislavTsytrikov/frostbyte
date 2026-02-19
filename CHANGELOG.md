@@ -1,5 +1,21 @@
 # Changelog
 
+## [v2.4.0](https://github.com/VladislavTsytrikov/frostbyte/releases/tag/v2.4.0) — Selective Thaw
+
+### New Features
+
+- **Lazy thaw for multi-process apps** — when focusing a browser (Chrome, Firefox, Electron) with many frozen tabs, only the most recently active tab thaws instantly; remaining tabs thaw one per second. Switching away cancels the queue — unfocused tabs stay frozen and keep saving RAM.
+
+### Bug Fixes
+
+- **gnome-terminal-server shared parent bug** — focusing any terminal tab no longer thaws unrelated frozen processes in other tabs. Only processes frozen by FrostByte are thawed on focus.
+
+### Tests
+
+- 60 unit tests (was 55)
+
+---
+
 ## [v2.3.0](https://github.com/VladislavTsytrikov/frostbyte/releases/tag/v2.3.0) — Hardened & Battle-Tested
 
 16 bug fixes found by 3-round automated code review + 55 new unit tests.
