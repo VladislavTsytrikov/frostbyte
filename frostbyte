@@ -702,9 +702,11 @@ class FrostByteDaemon:
                     stopped = self._find_stopped_ancestor(pid)
                     if stopped:
                         self.thaw_pid(stopped)
-                    # also thaw stopped descendants (e.g. TUI apps inside a terminal)
+                    # also thaw descendants that WE froze (not all stopped children —
+                    # gnome-terminal-server parents ALL terminal tabs, so blindly
+                    # thawing every stopped descendant would unfreeze unrelated apps)
                     for child in self._children(pid):
-                        if self._is_stopped(child):
+                        if child in self.frozen:
                             self.thaw_pid(child)
         except (ValueError, IOError):
             pass

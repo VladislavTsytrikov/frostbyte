@@ -609,6 +609,37 @@ class TestFreezeThaw:
         assert 100 not in d._frozen_at
 
 
+class TestCheckFocusSelectiveThaw:
+    """_check_focus should only thaw descendants that FrostByte froze,
+    not all stopped descendants (gnome-terminal-server bug)."""
+
+    def test_only_thaws_own_frozen_descendants(self):
+        d = _make_daemon()
+        # Simulate: terminal PID 10 has children 20 (frozen by us) and 30 (stopped externally)
+        d._ppid_map = {10: [20, 30]}
+        d.procs[20] = fb.Proc(pid=20, name="npm", cmdline="npm", cpu=0,
+                               rss_mb=200, last_active=time.time(), frozen=True)
+        d.procs[30] = fb.Proc(pid=30, name="vim", cmdline="vim", cpu=0,
+                               rss_mb=50, last_active=time.time(), frozen=False)
+        d.frozen = {20}
+        d._frozen_at[20] = time.time()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            focus_file = Path(tmpdir) / "frostbyte-focus"
+            focus_file.write_text("10")
+
+            # Mock thaw_pid to test _check_focus logic in isolation —
+            # we only care that _check_focus calls thaw_pid for the right PIDs
+            with mock.patch.object(fb, "FOCUS_FILE", focus_file), \
+                 mock.patch.object(d, "_find_stopped_ancestor", return_value=None), \
+                 mock.patch.object(d, "thaw_pid") as mock_thaw:
+                d._check_focus()
+
+            # Only PID 20 should be thawed (it's in self.frozen)
+            # PID 30 should NOT be thawed (not in self.frozen, just externally stopped)
+            mock_thaw.assert_called_once_with(20)
+
+
 # ═══════════════════════════════════════════════════════════════
 # Review #2 MEDIUM fixes
 # ═══════════════════════════════════════════════════════════════
