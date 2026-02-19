@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/VladislavTsytrikov/frostbyte/releases/latest"><img src="https://img.shields.io/github/v/release/VladislavTsytrikov/frostbyte?style=for-the-badge&color=00b4d8&label=release" alt="Release"></a>
+  <a href="https://github.com/VladislavTsytrikov/frostbyte/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/VladislavTsytrikov/frostbyte/test.yml?style=for-the-badge&label=tests" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.10+-3776ab.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/GNOME-45–48-4a86cf.svg?style=for-the-badge&logo=gnome&logoColor=white" alt="GNOME Shell">
