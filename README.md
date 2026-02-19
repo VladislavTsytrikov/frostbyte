@@ -1,3 +1,9 @@
+# FrostByte: Reclaim GBs of RAM on Linux by auto-freezing idle apps
+
+Official Website: [vladislavtsytrikov.github.io/frostbyte](https://vladislavtsytrikov.github.io/frostbyte/)
+
+---
+
 <p align="center">
   <img src="assets/banner.svg" alt="FrostByte — auto-freeze idle apps, reclaim your RAM" width="100%">
 </p>
