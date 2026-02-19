@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FrostByte | Cold Efficiency for Linux</title>
+    <meta name="description" content="Stop high RAM usage on Linux. Auto-freeze background apps on GNOME & Wayland.">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg: #020617;
+            --accent: #3b82f6;
+            --emerald: #10b981;
+            --violet: #8b5cf6;
+        }
+        body { 
+            background-color: var(--bg); 
+            color: #f8fafc;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            overflow-x: hidden;
+        }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        
+        /* 🌌 Deep Space Grid */
+        .grid-bg {
+            position: fixed;
+            inset: 0;
+            background-image: 
+                linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            mask-image: radial-gradient(circle at 50% 50%, black, transparent 90%);
+            z-index: -1;
+        }
+
+        /* ✨ Parallax Floating Elements */
+        .parallax-layer {
+            position: absolute;
+            pointer-events: none;
+            transition: transform 0.1s ease-out;
+        }
+
+        .glass {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+        }
+
+        .neo-glow {
+            box-shadow: 0 0 40px rgba(59, 130, 246, 0.15);
+        }
+
+        /* 🧊 Frosting Effect */
+        .frozen-overlay {
+            background: linear-gradient(135deg, rgba(186, 230, 253, 0.2) 0%, transparent 100%);
+            border: 1px solid rgba(186, 230, 253, 0.4);
+            filter: drop-shadow(0 0 8px rgba(186, 230, 253, 0.3));
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-20px); }
+        }
+        .float-anim { animation: float 6s ease-in-out infinite; }
+
+        /* 🧠 Memory Cell Styles */
+        .mem-cell {
+            height: 12px;
+            border-radius: 2px;
+            background: #1e293b;
+            transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .cell-hot { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
+        .cell-frozen { background: #0ea5e9; box-shadow: 0 0 15px #0ea5e9; transform: scaleY(0.6); opacity: 0.5; }
+    </style>
+</head>
+<body>
+    <div class="grid-bg"></div>
+    
+    <!-- Floating background magic -->
+    <div class="parallax-layer top-20 left-[10%] opacity-20 float-anim" style="animation-delay: 0s">
+        <div class="w-64 h-64 bg-blue-500 rounded-full blur-[100px]"></div>
+    </div>
+    <div class="parallax-layer bottom-40 right-[10%] opacity-10 float-anim" style="animation-delay: -3s">
+        <div class="w-96 h-96 bg-emerald-500 rounded-full blur-[120px]"></div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="fixed top-0 w-full z-50 px-8 py-6 flex justify-between items-center bg-slate-950/20 backdrop-blur-md border-b border-white/5">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center neo-glow">
+                <i data-lucide="snowflake" class="text-white w-6 h-6"></i>
+            </div>
+            <span class="font-extrabold text-2xl tracking-tighter">FrostByte</span>
+        </div>
+        <div class="hidden md:flex gap-8 items-center font-semibold text-sm text-slate-400">
+            <a href="#features" class="hover:text-white transition-colors">Features</a>
+            <a href="#demo" class="hover:text-white transition-colors">How it works</a>
+            <a href="https://github.com/VladislavTsytrikov/frostbyte" class="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-full transition-all flex items-center gap-2">
+                <i data-lucide="github" class="w-4 h-4"></i> GitHub
+            </a>
+        </div>
+    </nav>
+
+    <main class="relative">
+        <!-- Hero -->
+        <section class="min-h-screen flex flex-col items-center justify-center pt-20 px-6 text-center">
+            <div class="parallax-layer -z-10 w-full max-w-7xl h-full flex items-center justify-center opacity-30" id="parallax-hero">
+                <h1 class="text-[20vw] font-black text-slate-800 pointer-events-none select-none">LINUX</h1>
+            </div>
+
+            <div data-aos="fade-up">
+                <span class="px-4 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold uppercase tracking-widest mb-6 inline-block">
+                    The Ultimate Memory Optimizer
+                </span>
+                <h2 class="text-6xl md:text-9xl font-black mb-8 leading-[0.9] tracking-tight">
+                    Pure <span class="text-blue-500">Speed.</span><br>
+                    Zero <span class="text-emerald-500">Waste.</span>
+                </h2>
+                <p class="text-xl md:text-2xl text-slate-400 max-w-3xl mx-auto mb-12 leading-relaxed font-medium">
+                    FrostByte automatically suspends background applications on GNOME/Wayland. No state loss. No lagging. Just gigabytes of recovered RAM.
+                </p>
+                <div class="flex flex-wrap justify-center gap-6">
+                    <a href="#demo" class="bg-white text-slate-950 px-12 py-5 rounded-2xl font-black text-xl hover:scale-105 transition-all shadow-2xl shadow-blue-500/20">
+                        Try Magic
+                    </a>
+                    <div class="glass px-8 py-5 rounded-2xl flex items-center gap-4 group border-white/5 hover:border-white/20 transition-all">
+                        <i data-lucide="terminal" class="w-6 h-6 text-emerald-400"></i>
+                        <code class="mono text-sm text-slate-300">curl -sS https://raw.github...</code>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Interactive Demo Section -->
+        <section id="demo" class="py-32 px-6 max-w-6xl mx-auto">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
+                <div data-aos="fade-right">
+                    <h2 class="text-5xl font-black mb-6 tracking-tight">Stop Guessing.<br><span class="text-blue-500">See the Freeze.</span></h2>
+                    <p class="text-xl text-slate-400 mb-10 leading-relaxed">
+                        Apps in the background continue to eat your RAM. FrostByte tracks them and applies a <b>SIGSTOP</b>. The memory stays yours until you focus back.
+                    </p>
+                    
+                    <div class="space-y-6">
+                        <div class="glass p-6 rounded-2xl border-white/5 flex items-center justify-between group cursor-pointer hover:bg-slate-900/50 transition-all" onclick="runDemo()">
+                            <div class="flex items-center gap-4">
+                                <div class="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+                                    <i data-lucide="chrome" class="w-6 h-6"></i>
+                                </div>
+                                <div>
+                                    <div class="font-bold">Google Chrome</div>
+                                    <div class="text-sm text-slate-500" id="chrome-status">Active (2.4 GB)</div>
+                                </div>
+                            </div>
+                            <div class="px-4 py-1.5 rounded-lg bg-red-500/10 text-red-500 text-xs font-bold uppercase" id="chrome-tag">Hogging</div>
+                        </div>
+
+                        <div class="glass p-6 rounded-2xl border-white/5 flex items-center justify-between group cursor-pointer hover:bg-slate-900/50 transition-all" onclick="runDemo()">
+                            <div class="flex items-center gap-4">
+                                <div class="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center text-indigo-400 group-hover:scale-110 transition-transform">
+                                    <i data-lucide="slack" class="w-6 h-6"></i>
+                                </div>
+                                <div>
+                                    <div class="font-bold">Slack Desktop</div>
+                                    <div class="text-sm text-slate-500" id="slack-status">Active (1.1 GB)</div>
+                                </div>
+                            </div>
+                            <div class="px-4 py-1.5 rounded-lg bg-red-500/10 text-red-500 text-xs font-bold uppercase" id="slack-tag">Hogging</div>
+                        </div>
+                    </div>
+
+                    <button onclick="runDemo()" class="mt-12 w-full py-5 bg-gradient-to-r from-blue-600 to-violet-600 rounded-2xl font-black text-xl hover:neo-glow transition-all">
+                        ACTIVATE FROSTBYTE
+                    </button>
+                </div>
+
+                <div class="relative" data-aos="fade-left">
+                    <div class="absolute -inset-4 bg-blue-500/5 blur-3xl rounded-[40px]"></div>
+                    <div class="glass p-10 rounded-[40px] border-white/10 relative">
+                        <div class="flex justify-between items-end mb-8">
+                            <div>
+                                <div class="text-slate-500 uppercase text-xs font-black tracking-widest mb-1">Available RAM</div>
+                                <div class="text-5xl font-black mono" id="ram-counter">4.2 GB</div>
+                            </div>
+                            <div class="text-emerald-400 text-sm font-bold flex items-center gap-1">
+                                <i data-lucide="trending-up" class="w-4 h-4"></i>
+                                <span id="reclaimed-text">Optimize to reclaim</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Visual RAM visualization -->
+                        <div class="grid grid-cols-10 gap-2 h-48" id="ram-grid">
+                            <!-- Dynamic cells -->
+                        </div>
+
+                        <div class="mt-8 pt-8 border-t border-white/5 flex gap-4">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+                                <span class="text-xs text-slate-500 font-bold uppercase">Wasted</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
+                                <span class="text-xs text-slate-500 font-bold uppercase">Frozen</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 bg-slate-800 rounded-full"></div>
+                                <span class="text-xs text-slate-500 font-bold uppercase">Free</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Technical Cards -->
+        <section id="features" class="py-32 px-6 bg-slate-900/20">
+            <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-10">
+                <div class="p-10 rounded-[32px] border border-white/5 hover:border-blue-500/20 transition-all group" data-aos="fade-up">
+                    <div class="w-16 h-16 bg-blue-600/10 rounded-2xl flex items-center justify-center text-blue-500 mb-8 group-hover:scale-110 transition-transform">
+                        <i data-lucide="snowflake" class="w-8 h-8"></i>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">SIGSTOP Logic</h3>
+                    <p class="text-slate-400 leading-relaxed">Unlike task killers, FrostByte tells the kernel to pause the app. No data lost, no windows closed. It just stays on ice.</p>
+                </div>
+                <div class="p-10 rounded-[32px] border border-white/5 hover:border-emerald-500/20 transition-all group" data-aos="fade-up" data-aos-delay="100">
+                    <div class="w-16 h-16 bg-emerald-600/10 rounded-2xl flex items-center justify-center text-emerald-500 mb-8 group-hover:scale-110 transition-transform">
+                        <i data-lucide="wind" class="w-8 h-8"></i>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">Lazy Thaw</h3>
+                    <p class="text-slate-400 leading-relaxed">Focusing a tab-heavy browser? FrostByte wakes the active process instantly and thaws others sequentially to avoid CPU spikes.</p>
+                </div>
+                <div class="p-10 rounded-[32px] border border-white/5 hover:border-violet-500/20 transition-all group" data-aos="fade-up" data-aos-delay="200">
+                    <div class="w-16 h-16 bg-violet-600/10 rounded-2xl flex items-center justify-center text-violet-500 mb-8 group-hover:scale-110 transition-transform">
+                        <i data-lucide="music" class="w-8 h-8"></i>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">Audio Smart</h3>
+                    <p class="text-slate-400 leading-relaxed">Playing music? On a Zoom call? FrostByte automatically detects active streams and keeps them running. Period.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="py-20 text-center border-t border-white/5 relative z-10">
+        <div class="max-w-4xl mx-auto">
+            <h4 class="text-3xl font-black mb-6">Built for the future of Linux.</h4>
+            <p class="text-slate-500 mb-10">Crafted with precision for <strong>Vladislav Tsytrikov</strong> by Vasek.</p>
+            <div class="flex justify-center gap-4 text-xs font-black uppercase tracking-widest text-slate-600">
+                <span>v2.4.0</span>
+                <span>•</span>
+                <span>Open Source</span>
+                <span>•</span>
+                <span>MIT License</span>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Init Lucide
+        lucide.createIcons();
+        
+        // Init AOS
+        AOS.init({ duration: 1000, once: true });
+
+        // 🖱️ Mouse Parallax Effect
+        document.addEventListener('mousemove', (e) => {
+            const x = (e.clientX - window.innerWidth / 2) / 50;
+            const y = (e.clientY - window.innerHeight / 2) / 50;
+            const hero = document.getElementById('parallax-hero');
+            hero.style.transform = `translate(${x}px, ${y}px)`;
+        });
+
+        // 🧠 Better RAM Logic
+        const ramGrid = document.getElementById('ram-grid');
+        const ramCounter = document.getElementById('ram-counter');
+        const reclaimedText = document.getElementById('reclaimed-text');
+        
+        const totalCells = 100;
+        let cells = [];
+
+        for(let i=0; i<totalCells; i++) {
+            const cell = document.createElement('div');
+            cell.className = 'mem-cell ' + (i < 65 ? 'cell-hot' : 'mem-free');
+            ramGrid.appendChild(cell);
+            cells.push(cell);
+        }
+
+        function runDemo() {
+            let reclaimed = 0;
+            
+            // 1. Update UI tags
+            document.getElementById('chrome-status').innerText = "Frozen (Reclaimed 2.3 GB)";
+            document.getElementById('chrome-tag').innerText = "Frozen";
+            document.getElementById('chrome-tag').className = "px-4 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 text-xs font-bold uppercase";
+            
+            document.getElementById('slack-status').innerText = "Frozen (Reclaimed 0.9 GB)";
+            document.getElementById('slack-tag').innerText = "Frozen";
+            document.getElementById('slack-tag').className = "px-4 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 text-xs font-bold uppercase";
+
+            // 2. Animate Cells
+            cells.forEach((cell, i) => {
+                if (cell.classList.contains('cell-hot')) {
+                    setTimeout(() => {
+                        cell.classList.replace('cell-hot', 'cell-frozen');
+                        reclaimed += 0.05;
+                        if (i % 2 === 0) {
+                            ramCounter.innerText = (4.2 + reclaimed).toFixed(1) + " GB";
+                        }
+                    }, i * 20);
+                }
+            });
+
+            setTimeout(() => {
+                ramCounter.innerText = "7.4 GB";
+                reclaimedText.innerText = "+3.2 GB Reclaimed!";
+                reclaimedText.classList.replace('text-emerald-400', 'text-blue-400');
+            }, 2500);
+        }
+    </script>
+</body>
+</html>
